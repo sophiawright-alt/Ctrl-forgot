@@ -1,0 +1,237 @@
+"""Talking to a model that runs on this machine (Ollama).
+
+The address is fixed to 127.0.0.1. It is not configurable, and the lock in
+guard.py would refuse anything else anyway. Models that Ollama would run in
+the cloud are filtered out and never used.
+
+Every request is stateless: we send the excerpts needed for one answer and
+keep nothing. At the end of a session `unload()` asks Ollama to drop the model
+from memory too.
+"""
+from __future__ import annotations
+
+import base64
+import http.client
+import json
+import os
+import threading
+import time
+
+HOST = "127.0.0.1"
+
+# Preference order when several local models are installed (first match wins).
+VISION_PREFERENCE = ["qwen3-vl", "qwen3.5", "gemma4", "qwen2.5vl", "gemma3", "llama3.2-vision",
+                     "minicpm-v", "mistral-small", "llava", "moondream"]
+VISION_HINTS = VISION_PREFERENCE + ["vision", "-vl", "vl:", "ocr", "pixtral", "bakllava"]
+EMBED_HINTS = ["embed", "minilm", "bge-", "bge:", "e5-"]
+
+
+class ModelError(Exception):
+    pass
+
+
+class LocalModel:
+    def __init__(self, ledger, port=11434):
+        self.ledger = ledger
+        self.port = int(port)
+        self._lock = threading.Lock()
+        self._caps = {}
+        self._no_think = set()
+        self._checked = 0.0
+        self.status = {"running": False, "chat": None, "vision": None, "embed": None,
+                       "models": [], "cloud_models_ignored": [], "error": "not checked yet"}
+
+    # ---- plumbing -------------------------------------------------------
+    def _request(self, method, path, body=None, timeout=20):
+        conn = http.client.HTTPConnection(HOST, self.port, timeout=timeout)
+        try:
+            data = json.dumps(body).encode("utf-8") if body is not None else None
+            conn.request(method, path, body=data, headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8", "replace")
+            try:
+                parsed = json.loads(raw) if raw else {}
+            except ValueError:
+                parsed = {"error": raw[:300]}
+            if resp.status >= 400:
+                raise ModelError(parsed.get("error") or "local model returned HTTP %d" % resp.status)
+            return parsed
+        except (OSError, http.client.HTTPException) as e:
+            raise ModelError("cannot reach the local model: %s" % e)
+        finally:
+            conn.close()
+
+    def _capabilities(self, name):
+        if name not in self._caps:
+            try:
+                info = self._request("POST", "/api/show", {"model": name})
+                caps = info.get("capabilities")
+            except ModelError:
+                caps = None
+            if not caps:                         # older Ollama: guess from the name
+                low = name.lower()
+                caps = ["embedding"] if any(h in low for h in EMBED_HINTS) else ["completion"]
+                if any(h in low for h in VISION_HINTS):
+                    caps.append("vision")
+            self._caps[name] = set(caps)
+        return self._caps[name]
+
+    # ---- discovery ------------------------------------------------------
+    def refresh(self, force=False):
+        with self._lock:
+            if not force and time.time() - self._checked < 8:
+                return self.status
+            self._checked = time.time()
+            try:
+                tags = self._request("GET", "/api/tags", timeout=3)
+            except ModelError as e:
+                self.status = {"running": False, "chat": None, "vision": None, "embed": None,
+                               "models": [], "cloud_models_ignored": [], "error": str(e)}
+                return self.status
+            local, cloud = [], []
+            for m in tags.get("models", []):
+                name = m.get("name") or m.get("model") or ""
+                if m.get("remote_host") or m.get("remote_model") or "cloud" in name.lower():
+                    cloud.append(name)           # would run off this device: never used
+                else:
+                    local.append(name)
+            vision = [n for n in local if "vision" in self._capabilities(n)]
+            chat = [n for n in local if "completion" in self._capabilities(n) and "ocr" not in n.lower()]
+            embed = [n for n in local if "embedding" in self._capabilities(n)]
+
+            def prefer(names, order):
+                for key in order:
+                    for n in names:
+                        if key in n.lower():
+                            return n
+                return names[0] if names else None
+
+            v = os.environ.get("SECOND_BRAIN_VISION_MODEL") or prefer(vision, VISION_PREFERENCE)
+            c = os.environ.get("SECOND_BRAIN_MODEL") or (v if v in chat else prefer(chat, VISION_PREFERENCE))
+            e = os.environ.get("SECOND_BRAIN_EMBED_MODEL") or prefer(embed, ["embeddinggemma", "nomic", "mxbai"])
+            for chosen in (v, c, e):
+                if chosen and chosen not in local:
+                    v = v if v in local else None
+                    c = c if c in local else None
+                    e = e if e in local else None
+            self.status = {"running": True, "chat": c, "vision": v, "embed": e, "models": local,
+                           "cloud_models_ignored": cloud,
+                           "error": None if c else "Ollama is running but has no local model installed"}
+            return self.status
+
+    # ---- calls ----------------------------------------------------------
+    def chat_json(self, model, system, user, schema, images=None, purpose="", timeout=420):
+        """One stateless question to the local model; returns parsed JSON."""
+        message = {"role": "user", "content": user}
+        if images:
+            message["images"] = [base64.b64encode(b).decode("ascii") for b in images]
+        body = {"model": model, "stream": False, "format": schema, "keep_alive": "10m",
+                "messages": [{"role": "system", "content": system}, message],
+                "options": {"temperature": 0.1, "num_ctx": 8192}}
+        if model not in self._no_think:
+            body["think"] = False                # answer directly; skip "thinking" where supported
+        sent = len(system) + len(user)
+        t0 = time.time()
+        try:
+            try:
+                resp = self._request("POST", "/api/chat", body, timeout=timeout)
+            except ModelError as e:
+                if "think" in str(e).lower() and "think" in body:
+                    self._no_think.add(model)
+                    del body["think"]
+                    resp = self._request("POST", "/api/chat", body, timeout=timeout)
+                else:
+                    raise
+        except ModelError as e:
+            self.ledger.record("model", {"purpose": purpose, "model": model, "sent_chars": sent,
+                                         "images": len(images or []), "error": str(e)[:160]})
+            raise
+        content = (resp.get("message") or {}).get("content") or ""
+        self.ledger.record("model", {"purpose": purpose, "model": model, "sent_chars": sent,
+                                     "images": len(images or []), "received_chars": len(content),
+                                     "seconds": round(time.time() - t0, 1)})
+        try:
+            return json.loads(content)
+        except ValueError:
+            a, b = content.find("{"), content.rfind("}")
+            if a >= 0 and b > a:
+                try:
+                    return json.loads(content[a:b + 1])
+                except ValueError:
+                    pass
+            raise ModelError("the local model gave an answer I could not read")
+
+    def embed(self, model, texts, purpose="meaning search"):
+        resp = self._request("POST", "/api/embed", {"model": model, "input": texts, "keep_alive": "10m"}, timeout=120)
+        vectors = resp.get("embeddings") or []
+        if len(vectors) != len(texts):
+            raise ModelError("embedding model returned the wrong number of vectors")
+        self.ledger.record("model", {"purpose": purpose, "model": model,
+                                     "sent_chars": sum(len(t) for t in texts), "images": 0})
+        return vectors
+
+    def unload(self):
+        """Ask Ollama to drop our models from its memory."""
+        dropped = []
+        for name in {self.status.get("chat"), self.status.get("vision")} - {None}:
+            try:
+                self._request("POST", "/api/generate", {"model": name, "keep_alive": 0}, timeout=15)
+                dropped.append(name)
+            except ModelError:
+                pass
+        em = self.status.get("embed")
+        if em:
+            try:
+                self._request("POST", "/api/embed", {"model": em, "input": [], "keep_alive": 0}, timeout=15)
+                dropped.append(em)
+            except ModelError:
+                pass
+        return dropped
+
+
+TRANSCRIBE_SYSTEM = (
+    "You transcribe photos of handwritten notes, whiteboards and screenshots for their owner. "
+    "Copy the text exactly as written, keeping line breaks. Do not correct, tidy, summarise, translate or add anything. "
+    "Where a word is hard to read, give your best guess followed by [?]. "
+    "If you cannot read a word at all write [illegible]. If the image has no readable text, set kind to no_text.")
+TRANSCRIBE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string", "enum": ["handwriting", "whiteboard", "screenshot", "printed", "no_text"]},
+        "text": {"type": "string"},
+    },
+    "required": ["kind", "text"],
+}
+POINTS = {"type": "array", "items": {
+    "type": "object",
+    "properties": {"point": {"type": "string"}, "sources": {"type": "array", "items": {"type": "integer"}}},
+    "required": ["point", "sources"]}}
+PREP_SCHEMA = {
+    "type": "object",
+    "properties": {"headline": {"type": "string"}, "talking_points": POINTS, "watch_outs": POINTS,
+                   "gaps": {"type": "array", "items": {"type": "string"}}},
+    "required": ["headline", "talking_points", "watch_outs", "gaps"],
+}
+ASK_SCHEMA = {
+    "type": "object",
+    "properties": {"found": {"type": "boolean"}, "answer": POINTS, "caveat": {"type": "string"}},
+    "required": ["found", "answer", "caveat"],
+}
+RULES = (
+    "Rules:\n"
+    "1. Use ONLY the numbered excerpts. They are the manager's own notes. Never add outside knowledge and never guess.\n"
+    "2. Every point must list the numbers of the excerpts it comes from in `sources`.\n"
+    "3. Notes are messy and some are out of date. When excerpts disagree, the most recently dated one is probably "
+    "current: say what changed and give both dates.\n"
+    "4. Excerpts marked as handwriting may contain misread words. Treat [?] words as uncertain.\n"
+    "5. Plain English, one sentence per point, at most 28 words. Copy names, numbers and dates exactly.\n")
+PREP_SYSTEM = (
+    "You help a busy manager get ready for a meeting using excerpts from their own scattered notes.\n" + RULES +
+    "6. headline: one sentence on where things stand. talking_points: up to 5 things to raise, most important first. "
+    "watch_outs: up to 3 things that changed, conflict, look stale or are overdue. "
+    "gaps: up to 3 things the manager would want to know for this meeting that the excerpts do NOT answer.")
+ASK_SYSTEM = (
+    "You answer a manager's question using excerpts from their own scattered notes.\n" + RULES +
+    "6. If the excerpts do not answer the question, set found to false, leave answer empty, and say in caveat what "
+    "is missing. A related excerpt that does not actually answer the question does not count.\n"
+    "7. answer: up to 3 points. caveat: one short sentence about uncertainty, or an empty string.")

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Second Brain</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <h1>Second Brain</h1>
+  <p class="status"><span id="pill-lock"></span> <span id="pill-model"></span></p>
+</header>
+
+<main class="layout">
+  <aside class="panel" id="sources" aria-label="What the assistant can see">
+    <h2>Your folders</h2>
+    <p class="hint">I only open the ones you switch on. Switch one off and I forget it straight away.</p>
+    <div id="folders"></div>
+    <div class="row">
+      <button class="link" id="all-on">Switch all on</button>
+      <button class="link" id="all-off">Switch all off</button>
+    </div>
+    <p class="path" id="folder-path"></p>
+  </aside>
+
+  <section class="work" aria-label="Workspace">
+    <div class="tabs" role="tablist">
+      <button class="tab on" role="tab" data-tab="prep" aria-selected="true">Prepare for a meeting</button>
+      <button class="tab" role="tab" data-tab="ask" aria-selected="false">Find something I wrote down</button>
+    </div>
+
+    <div id="tab-prep">
+      <form class="ask" id="prep-form">
+        <label for="prep-q">Who or what is the meeting about?</label>
+        <div class="field">
+          <input id="prep-q" autocomplete="off" placeholder="A person, a project, a topic">
+          <button type="submit">Prepare me</button>
+        </div>
+        <div class="chips" id="prep-chips"></div>
+      </form>
+      <div id="prep-out" class="out"></div>
+    </div>
+
+    <div id="tab-ask" hidden>
+      <form class="ask" id="ask-form">
+        <label for="ask-q">What are you trying to find?</label>
+        <div class="field">
+          <input id="ask-q" autocomplete="off" placeholder="What did we decide about… When is… Who said…">
+          <button type="submit">Find it</button>
+        </div>
+        <div class="chips" id="ask-chips"></div>
+      </form>
+      <div id="ask-out" class="out"></div>
+    </div>
+  </section>
+
+  <aside class="panel" id="receipt" aria-label="Receipt">
+    <h2>Receipt</h2>
+    <p class="hint">Everything I have touched since you started.</p>
+    <div class="counts">
+      <div class="count"><span>Notes read</span><b id="c-read">0</b></div>
+      <div class="count zero"><span>Sent off this device</span><b id="c-sent">0</b></div>
+      <div class="count zero"><span>Copies saved</span><b id="c-saved">0</b></div>
+    </div>
+    <p class="mem" id="mem"></p>
+    <div class="row stack">
+      <button id="selftest">Try to break the rule</button>
+      <button id="end" class="danger">End session and forget everything</button>
+    </div>
+    <ol id="events" class="events"></ol>
+  </aside>
+</main>
+
+<div class="overlay" id="overlay" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <button class="close" id="modal-close" aria-label="Close">×</button>
+    <div id="modal-body"></div>
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
