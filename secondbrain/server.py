@@ -50,6 +50,37 @@ def make_handler(session, ledger):
             self.end_headers()
             self.wfile.write(body)
 
+        def _stream(self, events):
+            """Send events one line at a time as they happen (chunked, so the page sees each at once)."""
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Security-Policy", CSP)
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+
+            def put(event):
+                data = (json.dumps(event) + "\n").encode("utf-8")
+                self.wfile.write(b"%x\r\n%s\r\n" % (len(data), data))
+                self.wfile.flush()
+            try:
+                try:
+                    for event in events:
+                        put(event)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    raise
+                except Exception as e:
+                    put({"type": "final", "available": False, "reason": "Something went wrong: %s" % e})
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                self.close_connection = True     # the page moved on; stop the model writing
+            finally:
+                close = getattr(events, "close", None)
+                if close:
+                    close()
+
         def _local_only(self):
             """Refuse requests that did not come from this app's own page."""
             host = (self.headers.get("Host") or "").split(":")[0]
@@ -138,6 +169,10 @@ def make_handler(session, ledger):
                     return self._send(200, brief.ask(session, body.get("question")))
                 if path == "/api/ask/ai":
                     return self._send(200, brief.ask_ai(session, body.get("question")))
+                if path in ("/api/prep/ai/stream", "/api/ask/ai/stream"):
+                    events = (brief.prep_ai_events(session, body.get("query")) if "prep" in path
+                              else brief.ask_ai_events(session, body.get("question")))
+                    return self._stream(events)
                 if path == "/api/selftest":
                     off = [u for u in session.units() if u not in session.allowed and not u.startswith("(")]
                     hidden_dir = os.path.join(session.root, off[0]) if off else None

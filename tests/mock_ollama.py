@@ -2,6 +2,7 @@
 import json
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 TRANSCRIPTS = {
@@ -9,9 +10,12 @@ TRANSCRIPTS = {
     "chat": {"kind": "screenshot", "text": "Dan Okafor  Thu 12 Nov\nYou: any chance of backfill for Priya so she can lead the pilot?\nDan: Not full time. Headcount freeze holds until January.\nDan: I can give you Kofi 2 days a week from 1 Dec.\nYou: that might be enough. can you confirm by Monday?\nDan: Will confirm Mon 16 Nov after I speak to his manager."},
 }
 SEEN = []
+DELAY = float(__import__('os').environ.get('MOCK_DELAY', '0.004'))
+STOPPED = []
 
 
 class H(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
     def log_message(self, *a):
         pass
 
@@ -61,7 +65,22 @@ class H(BaseHTTPRequestHandler):
                                           {"point": "Unicorns will deliver the quarterly synergy roadmap.", "sources": [1]}],
                        "watch_outs": [{"point": "No source for this one.", "sources": [99]}],
                        "gaps": ["Whether Dan has confirmed Kofi."]}
-            return self._send({"message": {"role": "assistant", "content": json.dumps(out)}})
+            text = json.dumps(out)
+            if body.get("stream"):                   # like Ollama: one JSON line per few characters
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson")
+                self.end_headers()
+                try:
+                    for i in range(0, len(text), 9):
+                        line = {"message": {"role": "assistant", "content": text[i:i + 9]}, "done": False}
+                        self.wfile.write((json.dumps(line) + "\n").encode())
+                        self.wfile.flush()
+                        time.sleep(DELAY)
+                    self.wfile.write((json.dumps({"message": {"content": ""}, "done": True}) + "\n").encode())
+                except (BrokenPipeError, ConnectionResetError):
+                    STOPPED.append(True)
+                return
+            return self._send({"message": {"role": "assistant", "content": text}})
         self._send({}, 404)
 
 

@@ -158,3 +158,12 @@ table.tests .note { color: var(--muted); font-size: 12.5px; display: block; }
 .check b { color: var(--text); }
 .check code { font: 12.5px var(--mono); background: var(--bg); padding: 1px 5px; border-radius: 3px; color: var(--text); }
 .big { font-size: 16px; font-weight: 600; margin: 16px 0 6px; }
+
+/* a written answer still arriving: unchecked, so it looks provisional */
+.card.ai.drafting { border-left-color: #9aa5b4; }
+.drafting .draft { color: #3d4859; }
+.drafting .draft > :last-child::after, .drafting .draft li:last-child::after { content: ""; display: inline-block; width: 7px; height: 1em;
+  margin-left: 3px; vertical-align: -2px; background: var(--blue); animation: blink 1s steps(2) infinite; }
+.drafting .draft ul:last-child::after { display: none; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .drafting .draft > :last-child::after, .drafting .draft li:last-child::after { animation: none; } }

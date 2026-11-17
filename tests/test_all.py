@@ -80,6 +80,61 @@ class Word(unittest.TestCase):
         self.assertIn("protected", _docx_problem(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1rest", None))
 
 
+def stream(path, body):
+    c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=30)
+    c.request("POST", path, json.dumps(body), {"Content-Type": "application/json", "X-Second-Brain": "1"})
+    r = c.getresponse()
+    events = [json.loads(l) for l in r.read().decode().splitlines() if l.strip()]
+    c.close()
+    return events
+
+
+class Checking(unittest.TestCase):
+    def test_invented_points_are_removed(self):
+        from secondbrain.brief import _ground
+        ev = [{"n": 1, "text": "Helix budget cut to £28k for year one. Approved by finance.", "date_label": "3 Nov",
+               "title": "steering prep", "date": "2026-11-03"},
+              {"n": 2, "text": "Helix budget £40k agreed.", "date_label": "6 Oct", "title": "vendor review",
+               "date": "2026-10-06"}]
+        kept, dropped = _ground([
+            {"point": "The Helix budget was cut to £28k for year one.", "sources": [1]},       # true
+            {"point": "The board approved a further £500k.", "sources": [1]},                  # invented number
+            {"point": "The Helix budget was cut from £40k.", "sources": [1]},                  # number from note 2
+            {"point": "Everyone is happy.", "sources": []}], ev, 5)                            # no source
+        self.assertEqual([(k["text"][:22], k["check"]) for k in kept],
+                         [("The Helix budget was c", "ok"), ("The Helix budget was c", "verify")])
+        self.assertEqual(dropped, 2)
+
+
+class Streaming(unittest.TestCase):
+    def test_partial_json(self):
+        from secondbrain.llm import partial_json
+        self.assertEqual(partial_json('{"headline": "Priya wants to le'), {"headline": "Priya wants to le"})
+        self.assertEqual(partial_json('{"a": [{"point": "x\\n y", "sources": [1, 2'),
+                         {"a": [{"point": "x\n y", "sources": [1]}]})
+        self.assertEqual(partial_json('{"found": tr'), {})
+        self.assertEqual(partial_json(''), None)
+
+    def test_text_arrives_mid_word(self):
+        from secondbrain.ledger import Ledger
+        from secondbrain.llm import LocalModel, PREP_SCHEMA
+        mock = mock_ollama.start(0)
+        try:
+            ledger = Ledger()
+            m = LocalModel(ledger, port=mock.server_address[1])
+            got = list(m.stream_json("qwen3-vl:8b", "system", "brief me", PREP_SCHEMA, every=0))
+            heads = [o.get("headline", "") for k, o in got if k == "partial"]
+            self.assertTrue(any(0 < len(h) < len("Priya wants to lead the Helix pilot.") for h in heads))
+            self.assertEqual(got[-1][0], "done")
+            self.assertEqual(ledger.model_calls, 1)
+            stream_ = m.stream_json("qwen3-vl:8b", "system", "brief me", PREP_SCHEMA, every=0)
+            next(stream_)
+            stream_.close()                                  # the user asked something else
+            self.assertIn("stopped early", ledger.events[-1]["detail"]["error"])
+        finally:
+            mock.shutdown()
+
+
 def _pdf(objects, root=1, extra_trailer=""):
     """Build a small PDF by hand, so these tests need no PDF library."""
     out, offsets = bytearray(b"%PDF-1.4\n"), []
@@ -223,6 +278,40 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(any("private-hr" in h for h in b["honesty"]))
         _, ai = call("/api/prep/ai", {"query": "Priya"})
         self.assertEqual((len(ai["talking_points"]), ai["dropped"]), (1, 2))  # invented + unsourced points removed
+
+    def test_4b_written_answers_stream(self):
+        ev = stream("/api/prep/ai/stream", {"query": "Priya"})
+        kinds = [e["type"] for e in ev]
+        self.assertEqual((kinds[0], kinds[-1]), ("start", "final"))
+        self.assertGreaterEqual(kinds.count("partial"), 2)
+        sizes = [len(json.dumps(e["draft"])) for e in ev if e["type"] == "partial"]
+        self.assertLess(sizes[0], sizes[-1])                                                # the draft grows
+        final = ev[-1]
+        self.assertEqual((len(final["talking_points"]), final["dropped"]), (1, 2))        # checked as before
+        ev = stream("/api/ask/ai/stream", {"question": "What did we decide about the Helix budget?"})
+        self.assertTrue(ev[-1]["found"])
+        self.assertEqual(len(ev[-1]["answer"]), 1)                                          # invented point removed
+        ev = stream("/api/ask/ai/stream", {"question": "What is Priya's salary?"})
+        self.assertEqual([e["type"] for e in ev], ["final"])                                # model never asked
+
+    def test_4c_asking_again_stops_the_old_answer(self):
+        mock_ollama.DELAY = 0.05
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=30)
+            c.request("POST", "/api/prep/ai/stream", json.dumps({"query": "Tom"}),
+                      {"Content-Type": "application/json", "X-Second-Brain": "1"})
+            r = c.getresponse()
+            self.assertEqual(json.loads(r.readline())["type"], "start")
+            c.close()                                        # the page moved on
+            for _ in range(60):
+                _, st = call("/api/state")
+                last = [e for e in st["receipt"]["events"] if e["kind"] == "model"][-1]["detail"]
+                if "Tom" in last.get("purpose", ""):
+                    break
+                time.sleep(0.1)
+            self.assertIn("stopped early", last.get("error", ""))
+        finally:
+            mock_ollama.DELAY = 0.004
 
     def test_5_find_shows_what_changed(self):
         _, a = call("/api/ask", {"question": "What did we decide about the Helix budget?"})

@@ -197,6 +197,7 @@ def prep(session, query):
             if "question" in info["kinds"]:
                 result["questions"].append(_item(ev, c, off, info["text"]))
 
+        result["changes"] = _unique_changes(result["changes"])
         result["open_actions"].sort(key=lambda a: not a["overdue"])
         for key, cap in (("open_actions", 10), ("probably_done", 5), ("done", 5), ("decisions", 8), ("questions", 6)):
             result[key] = result[key][:cap]
@@ -312,6 +313,7 @@ def ask(session, question):
                 "kind": kind, "old_value": old_v, "new_value": new_v,
                 "old": _item(ev, old[0], old[1], extract._clean(old[2])),
                 "new": _item(ev, new[0], new[1], extract._clean(new[2]))})
+        result["changes"] = _unique_changes(result["changes"])
         result["snippets"].sort(key=lambda s: s["date"], reverse=True)
 
         extra = []
@@ -354,8 +356,17 @@ _NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
 
 def _ground(points, evidence, limit):
-    """Keep only points the cited excerpts actually support. Returns (kept, dropped)."""
+    """Keep only points the cited excerpts actually support. Returns (kept, dropped).
+
+    A point is removed if it cites nothing, if too few of its words appear in
+    the notes it cites, or if it contains a number that appears in none of
+    the notes at all (an invented figure is the most dangerous mistake).
+    """
     by_n = {e["n"]: e for e in evidence}
+
+    def flat(items):
+        return " ".join("%s %s %s %s" % (e["text"], e["date_label"], e["title"], e["date"]) for e in items).replace(",", "")
+    everything = flat(evidence)
     kept, dropped = [], 0
     for p in points or []:
         text = str(p.get("point") or "").strip()
@@ -363,24 +374,35 @@ def _ground(points, evidence, limit):
         if not text or not sources:
             dropped += 1                           # no source, no say
             continue
-        cited = " ".join("%s %s %s %s" % (by_n[n]["text"], by_n[n]["date_label"], by_n[n]["title"], by_n[n]["date"])
-                         for n in sources)
+        cited = flat(by_n[n] for n in sources)
         have = set(stems(cited, keep_stop=True))
         want = extract.content_stems(text)
-        support = len(want & have) / max(1, len(want))
-        flat = cited.replace(",", "")
-        numbers_ok = all(n.replace(",", "").rstrip(".") in flat for n in _NUM.findall(text))
-        if support < 0.5:                          # most of its words are not in the note it cites
+        matched = len(want & have)
+        support = matched / max(1, len(want))
+        numbers = [n.replace(",", "").rstrip(".") for n in _NUM.findall(text)]
+        if support < 0.5 or matched < min(2, len(want)) or any(n not in everything for n in numbers):
             dropped += 1
             continue
-        kept.append({"text": text, "sources": sources,
-                     "check": "ok" if (support >= 0.7 and numbers_ok) else "verify",
-                     "why_verify": "" if (support >= 0.7 and numbers_ok) else (
-                         "contains a number I could not find in the cited note" if not numbers_ok
+        numbers_ok = all(n in cited for n in numbers)
+        good = support >= 0.7 and numbers_ok
+        kept.append({"text": text, "sources": sources, "check": "ok" if good else "verify",
+                     "why_verify": "" if good else (
+                         "a number in it comes from a different note than the one cited" if not numbers_ok
                          else "worded more loosely than the cited note")})
         if len(kept) >= limit:
             break
     return kept, dropped
+
+
+def _unique_changes(changes):
+    """Two old notes saying £40k and two new ones saying £28k is one change, not two."""
+    seen, out = set(), []
+    for c in changes:
+        key = (c["kind"], c["old_value"], c["new_value"])
+        if key not in seen:
+            seen.add(key)
+            out.append(c)
+    return out
 
 
 def _model_or_reason(session):
@@ -393,47 +415,118 @@ def _model_or_reason(session):
     return status["chat"], None
 
 
-def prep_ai(session, query):
+# Each written answer comes as a stream of events, so the page can show it
+# while the local model is still writing:
+#   {"type": "start", "model": ..., "excerpts_sent": n}
+#   {"type": "partial", "draft": {...}}   unchecked, as far as it is written
+#   {"type": "final", ...}                checked against the notes; this is the answer
+# prep_ai / ask_ai give just the final event, for anything that does not stream.
+
+def _clean_points(items):
+    out = []
+    for p in items if isinstance(items, list) else []:
+        if isinstance(p, dict) and isinstance(p.get("point"), str) and p["point"].strip():
+            out.append({"text": p["point"],
+                        "sources": [x for x in (p.get("sources") or []) if isinstance(x, int)]})
+    return out
+
+
+def _final(result):
+    out = dict(result)
+    out["type"] = "final"
+    return out
+
+
+def _stream(session, model, system, user, schema, purpose, used, draft_of, finish):
+    yield {"type": "start", "model": model, "excerpts_sent": len(used)}
+    out = None
+    try:
+        for kind, obj in session.model.stream_json(model, system, user, schema, purpose=purpose):
+            if kind == "partial":
+                yield {"type": "partial", "draft": draft_of(obj)}
+            else:
+                out = obj
+    except llm.ModelError as e:
+        yield _final({"available": False, "reason": "The local model could not answer (%s)." % e})
+        return
+    yield _final(finish(out if isinstance(out, dict) else {}))
+
+
+def prep_ai_events(session, query):
     base = prep(session, query)
     if not base["found"] or not base["evidence"]:
-        return {"available": False, "reason": "There is nothing in your notes for me to summarise."}
+        yield _final({"available": False, "reason": "There is nothing in your notes for me to summarise."})
+        return
     model, reason = _model_or_reason(session)
     if not model:
-        return {"available": False, "reason": reason}
+        yield _final({"available": False, "reason": reason})
+        return
+    used = base["evidence"][:14]
     user = "Today is %s.\nThe meeting is about: %s\n\nExcerpts from the manager's notes:\n\n%s" % (
         dates.human(session.today), base["query"], _excerpts(base["evidence"]))
-    try:
-        out = session.model.chat_json(model, llm.PREP_SYSTEM, user, llm.PREP_SCHEMA,
-                                      purpose="write meeting brief: %s" % base["query"][:60])
-    except llm.ModelError as e:
-        return {"available": False, "reason": "The local model could not answer (%s)." % e}
-    used = base["evidence"][:14]
-    points, d1 = _ground(out.get("talking_points"), used, 5)
-    watch, d2 = _ground(out.get("watch_outs"), used, 3)
-    head, d3 = _ground([{"point": out.get("headline"), "sources": [e["n"] for e in used]}], used, 1)
-    return {"available": True, "model": model, "headline": head[0]["text"] if head else "",
-            "talking_points": points, "watch_outs": watch,
-            "gaps": [str(g) for g in (out.get("gaps") or [])][:3],
-            "dropped": d1 + d2, "excerpts_sent": len(used)}
+
+    def draft_of(o):
+        return {"headline": o.get("headline") if isinstance(o.get("headline"), str) else "",
+                "talking_points": _clean_points(o.get("talking_points")),
+                "watch_outs": _clean_points(o.get("watch_outs")),
+                "gaps": [g for g in (o.get("gaps") or []) if isinstance(g, str) and g.strip()]}
+
+    def finish(out):
+        points, d1 = _ground(out.get("talking_points"), used, 5)
+        watch, d2 = _ground(out.get("watch_outs"), used, 3)
+        head, _ = _ground([{"point": out.get("headline"), "sources": [e["n"] for e in used]}], used, 1)
+        return {"available": True, "model": model, "headline": head[0]["text"] if head else "",
+                "talking_points": points, "watch_outs": watch,
+                "gaps": [str(g) for g in (out.get("gaps") or [])][:3],
+                "dropped": d1 + d2, "excerpts_sent": len(used)}
+
+    for event in _stream(session, model, llm.PREP_SYSTEM, user, llm.PREP_SCHEMA,
+                         "write meeting brief: %s" % base["query"][:60], used, draft_of, finish):
+        yield event
+
+
+def ask_ai_events(session, question):
+    base = ask(session, question)
+    if base["verdict"] == "none" or not base["evidence"]:
+        yield _final({"available": False, "reason": "I did not ask the model, because there is nothing in your "
+                                                    "notes for it to answer from. Better no answer than a made-up one."})
+        return
+    model, reason = _model_or_reason(session)
+    if not model:
+        yield _final({"available": False, "reason": reason})
+        return
+    used = base["evidence"][:8]
+    user = "Today is %s.\nQuestion: %s\n\nExcerpts from the manager's notes:\n\n%s" % (
+        dates.human(session.today), base["question"], _excerpts(base["evidence"], limit=8))
+
+    def draft_of(o):
+        return {"found": o.get("found") is not False, "answer": _clean_points(o.get("answer")),
+                "caveat": o.get("caveat") if isinstance(o.get("caveat"), str) else ""}
+
+    def finish(out):
+        points, dropped = _ground(out.get("answer"), used, 3)
+        found = bool(out.get("found")) and bool(points)
+        return {"available": True, "model": model, "found": found, "answer": points if found else [],
+                "caveat": str(out.get("caveat") or ""), "dropped": dropped, "excerpts_sent": len(used)}
+
+    for event in _stream(session, model, llm.ASK_SYSTEM, user, llm.ASK_SCHEMA,
+                         "answer: %s" % base["question"][:60], used, draft_of, finish):
+        yield event
+
+
+def _last(events):
+    final = None
+    for e in events:
+        if e["type"] == "final":
+            final = e
+    final = dict(final)
+    final.pop("type")
+    return final
+
+
+def prep_ai(session, query):
+    return _last(prep_ai_events(session, query))
 
 
 def ask_ai(session, question):
-    base = ask(session, question)
-    if base["verdict"] == "none" or not base["evidence"]:
-        return {"available": False, "reason": "I did not ask the model, because there is nothing in your notes "
-                                              "for it to answer from. Better no answer than a made-up one."}
-    model, reason = _model_or_reason(session)
-    if not model:
-        return {"available": False, "reason": reason}
-    user = "Today is %s.\nQuestion: %s\n\nExcerpts from the manager's notes:\n\n%s" % (
-        dates.human(session.today), base["question"], _excerpts(base["evidence"], limit=8))
-    try:
-        out = session.model.chat_json(model, llm.ASK_SYSTEM, user, llm.ASK_SCHEMA,
-                                      purpose="answer: %s" % base["question"][:60])
-    except llm.ModelError as e:
-        return {"available": False, "reason": "The local model could not answer (%s)." % e}
-    used = base["evidence"][:8]
-    points, dropped = _ground(out.get("answer"), used, 3)
-    found = bool(out.get("found")) and bool(points)
-    return {"available": True, "model": model, "found": found, "answer": points if found else [],
-            "caveat": str(out.get("caveat") or ""), "dropped": dropped, "excerpts_sent": len(used)}
+    return _last(ask_ai_events(session, question))

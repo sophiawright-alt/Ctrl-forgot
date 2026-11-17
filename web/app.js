@@ -204,6 +204,53 @@ function points(list) {
   return h("ul", { class: "items" }, list.map(p => h("li", null, p.text, p.sources.map(cite),
     p.check === "verify" ? h("span", { class: "badge amber", title: p.why_verify }, "check the source") : null)));
 }
+// ---------- written answers, shown while the local model writes them ----------
+const streams = {};
+async function streamAI(key, path, body, onEvent) {
+  if (streams[key]) streams[key].abort();          // a new question: stop the model writing the old answer
+  const ctrl = new AbortController();
+  streams[key] = ctrl;
+  let finished = false;
+  const handle = ev => { if (ev.type === "final") finished = true; onEvent(ev); };
+  try {
+    const r = await fetch(path, { method: "POST", body: JSON.stringify(body), signal: ctrl.signal,
+      headers: { "Content-Type": "application/json", "X-Second-Brain": "1" } });
+    if (!r.ok || !r.body) throw new Error("the app did not answer");
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line) handle(JSON.parse(line));
+      }
+    }
+    if (!finished) handle({ type: "final", available: false, reason: "The answer stopped part-way. Try again." });
+  } catch (e) {
+    if (e.name !== "AbortError") handle({ type: "final", available: false, reason: "The answer stopped part-way (" + e.message + ")." });
+  } finally {
+    if (streams[key] === ctrl) delete streams[key];
+  }
+}
+function drafting(card, title, ev) {
+  card.classList.add("drafting");
+  clear(card).appendChild(h("h3", null, title));
+  card.appendChild(h("p", { class: "sub" }, "Being written by " + ev.model + " on this device from " + plural(ev.excerpts_sent, "excerpt") +
+    ". This is a draft: when it is finished I check every point against your notes and remove any I cannot trace."));
+  card.appendChild(h("div", { class: "draft" }, h("p", { class: "loading" }, "Starting…")));
+}
+function draftBody(card) {
+  let body = card.querySelector(".draft");
+  if (!body) { body = h("div", { class: "draft" }); card.appendChild(body); }
+  return clear(body);
+}
+function draftList(texts) {
+  return h("ul", { class: "items" }, texts.map(t => h("li", null, t)));
+}
 function aiCard(title) {
   return h("div", { class: "card ai" }, h("h3", null, title), h("p", { class: "loading" }, "Writing this on your device. Nothing is being sent anywhere."));
 }
@@ -248,20 +295,31 @@ async function runPrep() {
   add(out, section("Unresolved", "Questions and loose ends in your own words.", b.questions, x => row(x, x.text, cite(x.n))));
   add(out, section("Most recent mentions", null, b.recent, x => row(x, x.text, cite(x.n))));
 
-  let s;
-  try { s = await api("/api/prep/ai", { query: q }); } catch (e) { s = { available: false, reason: e.message }; }
-  if (run !== prepRun) return;
-  clear(ai).appendChild(h("h3", null, "In short"));
-  if (!s.available) { ai.className = "card"; ai.appendChild(h("p", { class: "sub" }, s.reason)); return; }
-  ai.appendChild(h("p", { class: "sub" }, "Written by " + s.model + " on this device from " + plural(s.excerpts_sent, "excerpt") +
-    ", then checked line by line against your notes."));
-  if (s.headline) ai.appendChild(h("p", { class: "headline" }, s.headline));
-  if (s.talking_points.length) add(ai, [h("h4", null, "Raise"), points(s.talking_points)]);
-  if (s.watch_outs.length) add(ai, [h("h4", null, "Watch out for"), points(s.watch_outs)]);
-  if (s.gaps.length) add(ai, [h("h4", null, "Not in your notes"), h("ul", { class: "items" }, s.gaps.map(g => h("li", null, g)))]);
-  if (s.dropped) ai.appendChild(h("p", { class: "sub" }, "I removed " + plural(s.dropped, "point") +
-    " the model wrote that I could not trace back to a note."));
-  if (!s.talking_points.length && !s.watch_outs.length) ai.appendChild(h("p", { class: "sub" }, "The model produced nothing I could back up with your notes, so I am showing only the notes themselves."));
+  streamAI("prep", "/api/prep/ai/stream", { query: q }, ev => {
+    if (run !== prepRun) return;
+    if (ev.type === "start") return drafting(ai, "In short", ev);
+    if (ev.type === "partial") {
+      const d = ev.draft, body = draftBody(ai);
+      if (d.headline) body.appendChild(h("p", { class: "headline" }, d.headline));
+      if (d.talking_points.length) add(body, [h("h4", null, "Raise"), draftList(d.talking_points.map(p => p.text))]);
+      if (d.watch_outs.length) add(body, [h("h4", null, "Watch out for"), draftList(d.watch_outs.map(p => p.text))]);
+      if (d.gaps.length) add(body, [h("h4", null, "Not in your notes"), draftList(d.gaps)]);
+      return;
+    }
+    const s = ev;
+    ai.classList.remove("drafting");
+    clear(ai).appendChild(h("h3", null, "In short"));
+    if (!s.available) { ai.className = "card"; ai.appendChild(h("p", { class: "sub" }, s.reason)); return; }
+    ai.appendChild(h("p", { class: "sub" }, "Written by " + s.model + " on this device from " + plural(s.excerpts_sent, "excerpt") +
+      ", then checked line by line against your notes."));
+    if (s.headline) ai.appendChild(h("p", { class: "headline" }, s.headline));
+    if (s.talking_points.length) add(ai, [h("h4", null, "Raise"), points(s.talking_points)]);
+    if (s.watch_outs.length) add(ai, [h("h4", null, "Watch out for"), points(s.watch_outs)]);
+    if (s.gaps.length) add(ai, [h("h4", null, "Not in your notes"), h("ul", { class: "items" }, s.gaps.map(g => h("li", null, g)))]);
+    if (s.dropped) ai.appendChild(h("p", { class: "sub" }, "I removed " + plural(s.dropped, "point") +
+      " the model wrote that I could not trace back to a note."));
+    if (!s.talking_points.length && !s.watch_outs.length) ai.appendChild(h("p", { class: "sub" }, "The model produced nothing I could back up with your notes, so I am showing only the notes themselves."));
+  });
 }
 $("prep-form").onsubmit = e => { e.preventDefault(); runPrep(); };
 
@@ -294,16 +352,25 @@ async function runAsk() {
     "Newest first.", a.snippets,
     s => row(s, s.text, cite(s.n))));
   if (!ai) return;
-  let s;
-  try { s = await api("/api/ask/ai", { question: q }); } catch (e) { s = { available: false, reason: e.message }; }
-  if (run !== askRun) return;
-  clear(ai).appendChild(h("h3", null, "Answer"));
-  if (!s.available) { ai.className = "card"; ai.appendChild(h("p", { class: "sub" }, s.reason)); return; }
-  ai.appendChild(h("p", { class: "sub" }, "Written by " + s.model + " on this device, then checked against your notes."));
-  if (s.found) ai.appendChild(points(s.answer));
-  else ai.appendChild(h("p", { class: "headline" }, "Your notes do not answer this."));
-  if (s.caveat) ai.appendChild(h("p", { class: "sub" }, s.caveat));
-  if (s.dropped) ai.appendChild(h("p", { class: "sub" }, "I removed " + plural(s.dropped, "point") + " I could not trace back to a note."));
+  streamAI("ask", "/api/ask/ai/stream", { question: q }, ev => {
+    if (run !== askRun) return;
+    if (ev.type === "start") return drafting(ai, "Answer", ev);
+    if (ev.type === "partial") {
+      const d = ev.draft, body = draftBody(ai);
+      if (d.answer.length) body.appendChild(draftList(d.answer.map(p => p.text)));
+      if (d.caveat) body.appendChild(h("p", { class: "sub" }, d.caveat));
+      return;
+    }
+    const s = ev;
+    ai.classList.remove("drafting");
+    clear(ai).appendChild(h("h3", null, "Answer"));
+    if (!s.available) { ai.className = "card"; ai.appendChild(h("p", { class: "sub" }, s.reason)); return; }
+    ai.appendChild(h("p", { class: "sub" }, "Written by " + s.model + " on this device, then checked against your notes."));
+    if (s.found) ai.appendChild(points(s.answer));
+    else ai.appendChild(h("p", { class: "headline" }, "Your notes do not answer this."));
+    if (s.caveat) ai.appendChild(h("p", { class: "sub" }, s.caveat));
+    if (s.dropped) ai.appendChild(h("p", { class: "sub" }, "I removed " + plural(s.dropped, "point") + " I could not trace back to a note."));
+  });
 }
 $("ask-form").onsubmit = e => { e.preventDefault(); runAsk(); };
 

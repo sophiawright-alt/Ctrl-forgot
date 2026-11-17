@@ -150,16 +150,85 @@ class LocalModel:
         self.ledger.record("model", {"purpose": purpose, "model": model, "sent_chars": sent,
                                      "images": len(images or []), "received_chars": len(content),
                                      "seconds": round(time.time() - t0, 1)})
+        return _parse_answer(content)
+
+    def stream_json(self, model, system, user, schema, purpose="", timeout=420, every=0.12):
+        """Like chat_json, but yields the answer while the model is still writing it.
+
+        Yields ("partial", object) as the text grows (at most every `every`
+        seconds), where object is the best reading of the unfinished JSON,
+        then ("done", object) once with the finished answer. Stopping early
+        (the user asked something else) closes the connection, which tells
+        Ollama to stop writing.
+        """
+        body = {"model": model, "stream": True, "format": schema, "keep_alive": "10m",
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                "options": {"temperature": 0.1, "num_ctx": 8192}}
+        if model not in self._no_think:
+            body["think"] = False
+        sent = len(system) + len(user)
+        t0 = time.time()
+        conn, content, failed = None, "", None
         try:
-            return json.loads(content)
-        except ValueError:
-            a, b = content.find("{"), content.rfind("}")
-            if a >= 0 and b > a:
+            for attempt in (1, 2):
+                conn = http.client.HTTPConnection(HOST, self.port, timeout=timeout)
                 try:
-                    return json.loads(content[a:b + 1])
+                    conn.request("POST", "/api/chat", body=json.dumps(body).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"})
+                    resp = conn.getresponse()
+                except (OSError, http.client.HTTPException) as e:
+                    raise ModelError("cannot reach the local model: %s" % e)
+                if resp.status < 400:
+                    break
+                try:
+                    err = json.loads(resp.read().decode("utf-8", "replace") or "{}").get("error") or ""
                 except ValueError:
-                    pass
-            raise ModelError("the local model gave an answer I could not read")
+                    err = ""
+                conn.close()
+                if attempt == 1 and "think" in err.lower() and "think" in body:
+                    self._no_think.add(model)
+                    del body["think"]
+                    continue
+                raise ModelError(err or "local model returned HTTP %d" % resp.status)
+            last = 0.0
+            while True:
+                try:
+                    line = resp.readline()
+                except (OSError, http.client.HTTPException) as e:
+                    raise ModelError("the local model stopped part-way: %s" % e)
+                if not line:
+                    break
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue
+                if msg.get("error"):
+                    raise ModelError(str(msg["error"]))
+                piece = (msg.get("message") or {}).get("content") or ""
+                if piece:
+                    content += piece
+                    if time.time() - last >= every:
+                        last = time.time()
+                        draft = partial_json(content)
+                        if isinstance(draft, dict):
+                            yield "partial", draft
+                if msg.get("done"):
+                    break
+            answer = _parse_answer(content)
+        except ModelError as e:
+            failed = e
+            raise
+        finally:
+            if conn is not None:
+                conn.close()
+            detail = {"purpose": purpose, "model": model, "sent_chars": sent, "images": 0,
+                      "received_chars": len(content), "seconds": round(time.time() - t0, 1)}
+            if failed is not None:
+                detail["error"] = str(failed)[:160]
+            elif not content.strip() or "answer" not in locals():
+                detail["error"] = "stopped early (you asked something else)"
+            self.ledger.record("model", detail)
+        yield "done", answer
 
     def embed(self, model, texts, purpose="meaning search"):
         resp = self._request("POST", "/api/embed", {"model": model, "input": texts, "keep_alive": "10m"}, timeout=120)
@@ -187,6 +256,123 @@ class LocalModel:
             except ModelError:
                 pass
         return dropped
+
+
+def _parse_answer(content):
+    try:
+        return json.loads(content)
+    except ValueError:
+        a, b = content.find("{"), content.rfind("}")
+        if a >= 0 and b > a:
+            try:
+                return json.loads(content[a:b + 1])
+            except ValueError:
+                pass
+        raise ModelError("the local model gave an answer I could not read")
+
+
+_ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", '"': '"', "\\": "\\", "/": "/"}
+
+
+def partial_json(text):
+    """Read JSON that is still being written, as far as it goes.
+
+    '{"headline": "Priya wants to le' gives {"headline": "Priya wants to le"}.
+    Unfinished strings come back as far as they are written; an unfinished
+    number or key is left out until it is complete.
+    """
+    n = len(text)
+
+    def ws(i):
+        while i < n and text[i] in " \t\r\n":
+            i += 1
+        return i
+
+    def string(i):                               # text[i] is the opening quote
+        out, i = [], i + 1
+        while i < n:
+            c = text[i]
+            if c == '"':
+                return "".join(out), i + 1, True
+            if c == "\\":
+                if i + 1 >= n:
+                    break
+                e = text[i + 1]
+                if e == "u":
+                    if i + 6 > n:
+                        break
+                    try:
+                        out.append(chr(int(text[i + 2:i + 6], 16)))
+                    except ValueError:
+                        pass
+                    i += 6
+                    continue
+                out.append(_ESCAPES.get(e, e))
+                i += 2
+                continue
+            out.append(c)
+            i += 1
+        return "".join(out), n, False
+
+    def value(i, depth=0):
+        i = ws(i)
+        if i >= n or depth > 20:
+            return None, i, False
+        c = text[i]
+        if c == "{":
+            obj, i = {}, i + 1
+            while True:
+                i = ws(i)
+                if i >= n:
+                    return obj, i, False
+                if text[i] == "}":
+                    return obj, i + 1, True
+                if text[i] == ",":
+                    i += 1
+                    continue
+                if text[i] != '"':
+                    return obj, i, False
+                key, i, ok = string(i)
+                i = ws(i)
+                if not ok or i >= n or text[i] != ":":
+                    return obj, i, False
+                v, i, ok = value(i + 1, depth + 1)
+                if v is not None:
+                    obj[key] = v
+                if not ok:
+                    return obj, i, False
+        if c == "[":
+            arr, i = [], i + 1
+            while True:
+                i = ws(i)
+                if i >= n:
+                    return arr, i, False
+                if text[i] == "]":
+                    return arr, i + 1, True
+                if text[i] == ",":
+                    i += 1
+                    continue
+                v, i, ok = value(i, depth + 1)
+                if v is not None:
+                    arr.append(v)
+                if not ok:
+                    return arr, i, False
+        if c == '"':
+            return string(i)
+        j = i
+        while j < n and text[j] not in ",}] \t\r\n":
+            j += 1
+        if j >= n:
+            return None, j, False                # a number may still be growing
+        try:
+            return json.loads(text[i:j]), j, True
+        except ValueError:
+            return None, j, True
+
+    try:
+        return value(0)[0]
+    except RecursionError:
+        return None
 
 
 TRANSCRIBE_SYSTEM = (
