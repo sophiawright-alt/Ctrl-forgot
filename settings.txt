@@ -1,0 +1,12 @@
+# Second Brain settings, used when you start it from the desktop icon.
+# Lines starting with # are ignored. Remove the # at the start of a line to use it.
+
+# Use your own notes folder instead of the sample notes:
+# notes = C:\Users\yourname\hackathon\my-notes
+
+# Pretend today is a fixed date (handy for rehearsing the demo video):
+# today = 2026-11-16
+
+# Choose the local model yourself (otherwise it picks one):
+# model = gemma3:4b
+# vision_model = gemma3:4b

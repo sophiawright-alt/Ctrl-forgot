@@ -468,4 +468,8 @@ $("end").onclick = async () => {
   ]);
 };
 
+// Tell the app when its window closes, so it can forget everything and quit.
+// (A reload says this too; the app waits a few seconds to see if the page comes back.)
+window.addEventListener("pagehide", () => { try { navigator.sendBeacon("/api/bye", ""); } catch (e) { /* closing anyway */ } });
+
 poll();

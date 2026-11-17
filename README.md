@@ -6,16 +6,34 @@ Built for the AI Studio and Newpage hackathon brief, "Second Brain for Managers"
 
 The moment it fixes: **you have a meeting in ten minutes and what you know about it is spread across meeting notes, a running 1:1 doc, a to-do list, a half-written update, a page in your notebook and a screenshot of a chat.** Type a name or a topic and get one brief: what is still open, what is probably already done, what was decided, what has changed since you wrote it down, and what is unresolved. Every line links to the exact line of the exact note it came from.
 
-## Run it (about 2 minutes)
+## Run it
 
-You need Python 3.8 or newer. There is nothing to install for the app itself.
+You need Python 3.8 or newer (from python.org). There is nothing else to install for the app itself.
+
+### As a desktop app (no terminal)
+
+**Windows**
+1. Double-click **Create desktop shortcut.bat** once. A "Second Brain" icon appears on your desktop.
+2. Double-click that icon whenever you want to use it. The app opens in its own window (Edge or Chrome without tabs or an address bar).
+3. Close the window when you're done. That ends the session: everything in memory is forgotten and the app quits a few seconds later.
+
+You can also double-click **Second Brain.pyw** in this folder instead of making a shortcut.
+
+**Mac**: double-click **Second Brain.command**. (The first time, macOS may say it is from an unidentified developer: right-click it, choose Open, then Open.) A Terminal window opens alongside the app window and closes when you close the app.
+
+Settings for the desktop app (your own notes folder, a fixed date for rehearsing the demo, a lighter model) go in **settings.txt**. Open it in Notepad; the instructions are inside.
+
+Double-clicking again while it is already running just brings up the window again. If the window crashes without closing properly, the app quits by itself after four minutes.
+
+### From a terminal
 
 ```
-cd second-brain
-python3 run.py          # Windows: python run.py
+python run.py                       # Windows (Mac: python3 run.py)
+python run.py --notes path\to\notes  # another notes folder
+python run.py --app                 # same as the desktop app
 ```
 
-Open the address it prints (http://127.0.0.1:8765). It starts on the fictional sample notes in `sample_notes/`. To use another folder: `python3 run.py --notes path/to/folder`.
+Without `--app`, open the address it prints (http://127.0.0.1:8765) and press Ctrl+C in the terminal to stop.
 
 At this point search, meeting prep, change detection and the receipt all work with no AI model at all.
 
@@ -94,13 +112,16 @@ Rehearse with `python3 run.py --today 2026-11-16` so "3 weeks ago" labels stay t
 - The lock is inside this one Python process. It is a strong seatbelt for a prototype, not an operating-system sandbox. A production build would add one (for example a sandboxed desktop app with no network entitlement).
 - Ollama is a separate program. This app only ever talks to it on this machine and never uses cloud models, but the app cannot police what Ollama itself does. Turning Wi-Fi off is the simple proof; downloading models needs the internet once.
 - While a session is open, your notes are in this computer's memory (and the model's memory). They are released when you end the session or stop the app.
+- The desktop app opens its own window by starting Edge or Chrome. That is the one program it ever starts, and it does so before the lock is switched on and before any note is read.
 - Your browser shows what the app sends it. The app tells the browser not to cache anything, and uses no browser storage.
 - Handwriting recognition makes mistakes. That is why transcriptions are always shown beside the original photo and never treated as certain.
 
 ## What is in here
 
 ```
-run.py                   start here
+run.py                   start here (or double-click Second Brain.pyw / .command)
+settings.txt             settings for the desktop app
+secondbrain/desktop.py   own window, quit on close, open only once
 secondbrain/guard.py     the lock (no writes, no network, no other programs, only allowed folders)
 secondbrain/ledger.py    the receipt
 secondbrain/session.py   folder switches, loading notes, reading images, forgetting
@@ -125,6 +146,5 @@ tests/                   python3 -B tests/test_all.py
 - A "capture" moment: paste rough notes, get actions and decisions pulled out, still without saving.
 - Per-meeting scopes ("for this 1:1, only these two folders").
 - An operating-system sandbox around the whole app.
-- Package as a desktop app so there is no terminal step.
 
 All sample notes are fictional. Do not point this at anyone's real notes for the hackathon demo.

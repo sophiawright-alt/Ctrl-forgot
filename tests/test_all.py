@@ -223,6 +223,70 @@ class PDF(unittest.TestCase):
             shutil.rmtree(folder)
 
 
+class Desktop(unittest.TestCase):
+    """The double-click app: closes when its window closes, survives a reload, opens only once."""
+
+    def start(self, port, *extra):
+        env = dict(os.environ, SECOND_BRAIN_NO_WINDOW="1", SECOND_BRAIN_BYE_GRACE="0.8",
+                   SECOND_BRAIN_IDLE_LIMIT="30", SECOND_BRAIN_FIRST_VISIT="2.5")
+        p = subprocess.Popen([sys.executable, "-B", os.path.join(ROOT, "run.py"), "--app", "--port", str(port)] + list(extra),
+                             env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        for _ in range(50):
+            try:
+                self.req(port, "GET", "/api/ping")
+                return p
+            except OSError:
+                time.sleep(0.1)
+        return p
+
+    def req(self, port, method, path, headers=None):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c.request(method, path, b"" if method == "POST" else None, headers or {})
+        status = c.getresponse().status
+        c.close()
+        return status
+
+    def test_window_lifecycle(self):
+        port = 8811
+        app = self.start(port)
+        try:
+            bye = {"Origin": "http://127.0.0.1:%d" % port}
+            self.assertEqual(self.req(port, "GET", "/api/state"), 200)
+            self.assertEqual(self.req(port, "POST", "/api/bye", {"Origin": "http://evil.example"}), 403)
+            self.assertEqual(self.req(port, "POST", "/api/bye", bye), 204)          # a reload says goodbye...
+            time.sleep(0.2)
+            self.req(port, "GET", "/api/state")                                       # ...and comes straight back
+            time.sleep(1.5)
+            self.assertIsNone(app.poll())                                             # so the app is still running
+            second = self.start(port)                                                 # double-clicked again
+            self.assertEqual(second.wait(5), 0)                                       # it just shows the window
+            self.assertIsNone(app.poll())
+            self.req(port, "POST", "/api/bye", bye)                                   # window really closed
+            self.assertEqual(app.wait(5), 0)
+            self.assertIn(b"Session ended", app.stdout.read())
+        finally:
+            if app.poll() is None:
+                app.kill()
+
+    def test_quits_if_window_never_opens(self):
+        app = self.start(8812)
+        try:
+            self.assertEqual(app.wait(8), 0)
+        finally:
+            if app.poll() is None:
+                app.kill()
+
+    def test_settings_file(self):
+        from secondbrain.desktop import read_settings
+        import tempfile
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
+            f.write("# a comment\nnotes = C:\\Users\\me\\my notes\n# today = 2026-01-01\nmodel=gemma3:4b\n")
+        try:
+            self.assertEqual(read_settings(f.name), {"notes": "C:\\Users\\me\\my notes", "model": "gemma3:4b"})
+        finally:
+            os.remove(f.name)
+
+
 class EndToEnd(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

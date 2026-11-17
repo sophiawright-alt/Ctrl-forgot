@@ -13,7 +13,8 @@ from . import brief, guard
 WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-          "/style.css": ("style.css", "text/css; charset=utf-8")}
+          "/style.css": ("style.css", "text/css; charset=utf-8"),
+          "/favicon.ico": ("icon.ico", "image/x-icon")}
 IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
               ".gif": "image/gif", ".bmp": "image/bmp"}
 # The page may only load things from this server: no fonts, scripts or trackers from elsewhere.
@@ -87,6 +88,9 @@ def make_handler(session, ledger):
             if host not in ("127.0.0.1", "localhost"):
                 self._send(403, {"error": "this assistant only answers on this computer"})
                 return False
+            life = getattr(self.server, "lifeline", None)
+            if life is not None and urlparse(self.path).path != "/api/ping":
+                life.seen()
             return True
 
         def _state(self):
@@ -106,8 +110,8 @@ def make_handler(session, ledger):
                 name, ctype = STATIC[url.path]
                 with open(os.path.join(WEB, name), "rb") as f:
                     return self._send(200, f.read(), ctype)
-            if url.path == "/favicon.ico":
-                return self._send(204, b"", "image/x-icon")
+            if url.path == "/api/ping":                  # lets a second double-click find this window
+                return self._send(200, {"app": "second-brain"})
             if url.path == "/api/state":
                 session.sync()
                 return self._send(200, self._state())
@@ -141,6 +145,14 @@ def make_handler(session, ledger):
         def do_POST(self):
             if not self._local_only():
                 return
+            if urlparse(self.path).path == "/api/bye":          # the window is closing (or reloading)
+                origin = self.headers.get("Origin") or ""
+                if origin.split("://", 1)[-1] == self.headers.get("Host"):
+                    life = getattr(self.server, "lifeline", None)
+                    if life is not None:
+                        life.bye()
+                    return self._send(204, b"")
+                return self._send(403, {"error": "request did not come from the app"})
             if self.headers.get("X-Second-Brain") != "1":      # other websites cannot set this header
                 return self._send(403, {"error": "request did not come from the app"})
             try:
