@@ -40,16 +40,17 @@ At this point search, meeting prep, change detection and the receipt all work wi
 ## Add the local model (for written summaries and handwriting)
 
 1. Install Ollama from https://ollama.com and start it.
-2. Download a model once (this is the only step that needs the internet). Pick by your laptop:
+2. Download a model once (this is the only step that needs the internet). Pick by your laptop, and use the **-instruct** versions:
 
    ```
-   ollama pull qwen3-vl:4b          # about 3.3 GB. Recommended for most laptops: quick summaries, good handwriting.
-   ollama pull qwen3-vl:8b          # about 6 GB. Best handwriting, but summaries are about twice as slow
-                                    # unless you have a graphics card or 16 GB+ of memory.
-   ollama pull nomic-embed-text     # optional, small. Adds search by meaning, not just by words.
+   ollama pull qwen3-vl:4b-instruct   # about 3.3 GB. Recommended for most laptops: quick summaries, good handwriting.
+   ollama pull qwen3-vl:8b-instruct   # about 6.2 GB. Best handwriting, but slower unless you have a graphics card.
+   ollama pull nomic-embed-text       # optional, small. Adds search by meaning, not just by words.
    ```
 
-   If both qwen3-vl sizes are installed, the app uses the 4b for summaries (you are waiting for those) and the 8b for reading images (that happens in the background). On a laptop with 8 GB of memory, keep just one, because swapping between two is slow.
+   Avoid the plain `qwen3-vl:4b` / `qwen3-vl:8b` tags: they are the "thinking" versions, which reason at length before every answer. The app copes with them, but every summary takes much longer. If you already have one, you can remove it with `ollama rm qwen3-vl:8b`.
+
+   If two sizes are installed, the app uses the smaller for summaries (you are waiting for those) and the larger for reading images (that happens in the background). On a laptop with 8 GB of memory, keep just one, because swapping between two is slow.
 
 3. Restart `python3 run.py`. The pill at the top right should say "Model on this device: …".
 

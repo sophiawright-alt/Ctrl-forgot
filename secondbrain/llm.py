@@ -111,12 +111,19 @@ class LocalModel:
                 return names[0] if names else None
 
             size = lambda n: self._sizes.get(n) or 99.0
+
+            def thinks(n):                       # reasons at length before answering: slow
+                low = n.lower()
+                if "instruct" in low:
+                    return False
+                return "thinking" in low or "thinking" in self._capabilities(n)
             # Reading images happens in the background, so it gets the most accurate model.
             v = os.environ.get("SECOND_BRAIN_VISION_MODEL") or prefer(
-                sorted(vision, key=lambda n: -size(n) if size(n) <= 12 else size(n)), VISION_PREFERENCE)
+                sorted(vision, key=lambda n: (thinks(n), -size(n) if size(n) <= 12 else size(n))), VISION_PREFERENCE)
             # Summaries are written while you wait, so they get the quickest sensible one:
             # the smallest installed model of at least 3 billion parameters.
-            sensible = sorted((n for n in chat if size(n) >= 3), key=size) or sorted(chat, key=lambda n: -size(n))
+            sensible = (sorted((n for n in chat if size(n) >= 3), key=lambda n: (thinks(n), size(n))) or
+                        sorted(chat, key=lambda n: (thinks(n), -size(n))))
             c = os.environ.get("SECOND_BRAIN_MODEL") or (sensible[0] if sensible else None)
             e = os.environ.get("SECOND_BRAIN_EMBED_MODEL") or prefer(embed, ["embeddinggemma", "nomic", "mxbai"])
             for chosen in (v, c, e):
@@ -132,6 +139,8 @@ class LocalModel:
     # ---- calls ----------------------------------------------------------
     def chat_json(self, model, system, user, schema, images=None, purpose="", timeout=420):
         """One stateless question to the local model; returns parsed JSON."""
+        if "qwen" in model.lower():
+            user += "\n/no_think"
         message = {"role": "user", "content": user}
         if images:
             message["images"] = [base64.b64encode(b).decode("ascii") for b in images]
@@ -157,6 +166,14 @@ class LocalModel:
                                          "images": len(images or []), "error": str(e)[:160]})
             raise
         content = (resp.get("message") or {}).get("content") or ""
+        if not content.strip() and "think" in body:   # some Ollama versions: nothing when thinking is off
+            self._no_think.add(model)
+            del body["think"]
+            try:
+                resp = self._request("POST", "/api/chat", body, timeout=timeout)
+                content = (resp.get("message") or {}).get("content") or ""
+            except ModelError:
+                pass
         self.ledger.record("model", {"purpose": purpose, "model": model, "sent_chars": sent,
                                      "images": len(images or []), "received_chars": len(content),
                                      "seconds": round(time.time() - t0, 1)})
@@ -185,28 +202,31 @@ class LocalModel:
         except ModelError:
             self._warmed.pop(name, None)
 
-    def stream_json(self, model, system, user, schema, purpose="", timeout=420, every=0.12, max_tokens=None):
+    def stream_json(self, model, system, user, schema, purpose="", timeout=900, every=0.12, max_chars=None):
         """Like chat_json, but yields the answer while the model is still writing it.
 
-        Yields ("partial", object) as the text grows (at most every `every`
+        Yields ("thinking", True) once if the model reasons before answering,
+        ("partial", object) as the answer grows (at most every `every`
         seconds), where object is the best reading of the unfinished JSON,
-        then ("done", object) once with the finished answer. Stopping early
-        (the user asked something else) closes the connection, which tells
-        Ollama to stop writing.
+        then ("done", object) once with the finished answer.
+
+        `max_chars` stops reading once the answer itself is that long (the
+        model's thinking does not count towards it). Stopping early, for that
+        or because the user asked something else, closes the connection,
+        which tells Ollama to stop writing.
         """
-        body = {"model": model, "stream": True, "format": schema, "keep_alive": "30m",
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                # A smaller working memory and a cap on answer length keep laptops quick.
-                "options": {"temperature": 0.1, "num_ctx": 4096}}
-        if max_tokens:
-            body["options"]["num_predict"] = max_tokens
-        if model not in self._no_think:
-            body["think"] = False
+        if "qwen" in model.lower():
+            user += "\n/no_think"                # Qwen's own switch: answer without reasoning first
         sent = len(system) + len(user)
         t0 = time.time()
-        conn, content, failed = None, "", None
+        conn, content, thought, failed, finished, answer = None, "", 0, None, False, None
         try:
             for attempt in (1, 2):
+                body = {"model": model, "stream": True, "format": schema, "keep_alive": "30m",
+                        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                        "options": {"temperature": 0.1, "num_ctx": 8192}}
+                if model not in self._no_think:
+                    body["think"] = False
                 conn = http.client.HTTPConnection(HOST, self.port, timeout=timeout)
                 try:
                     conn.request("POST", "/api/chat", body=json.dumps(body).encode("utf-8"),
@@ -214,48 +234,64 @@ class LocalModel:
                     resp = conn.getresponse()
                 except (OSError, http.client.HTTPException) as e:
                     raise ModelError("cannot reach the local model: %s" % e)
-                if resp.status < 400:
-                    break
-                try:
-                    err = json.loads(resp.read().decode("utf-8", "replace") or "{}").get("error") or ""
-                except ValueError:
-                    err = ""
+                if resp.status >= 400:
+                    try:
+                        err = json.loads(resp.read().decode("utf-8", "replace") or "{}").get("error") or ""
+                    except ValueError:
+                        err = ""
+                    conn.close()
+                    if attempt == 1 and "think" in err.lower() and "think" in body:
+                        self._no_think.add(model)
+                        continue
+                    raise ModelError(err or "local model returned HTTP %d" % resp.status)
+                content, thought, last = "", 0, 0.0
+                while True:
+                    try:
+                        line = resp.readline()
+                    except (OSError, http.client.HTTPException) as e:
+                        raise ModelError("the local model stopped part-way: %s" % e)
+                    if not line:
+                        break
+                    try:
+                        msg = json.loads(line)
+                    except ValueError:
+                        continue
+                    if msg.get("error"):
+                        raise ModelError(str(msg["error"]))
+                    m = msg.get("message") or {}
+                    if m.get("thinking"):
+                        if not thought:
+                            yield "thinking", True
+                        thought += len(m["thinking"])
+                    piece = m.get("content") or ""
+                    if piece:
+                        content += piece
+                        if time.time() - last >= every:
+                            last = time.time()
+                            draft = partial_json(content)
+                            if isinstance(draft, dict):
+                                yield "partial", draft
+                        if max_chars and len(content) > max_chars:
+                            break                    # long enough: stop the model and use what it wrote
+                    if msg.get("done"):
+                        break
                 conn.close()
-                if attempt == 1 and "think" in err.lower() and "think" in body:
+                if content.strip():
+                    break
+                # No answer at all. Some Ollama versions return nothing when thinking is
+                # switched off; letting the model decide for itself usually fixes it.
+                if attempt == 1 and "think" in body:
                     self._no_think.add(model)
-                    del body["think"]
                     continue
-                raise ModelError(err or "local model returned HTTP %d" % resp.status)
-            last = 0.0
-            while True:
-                try:
-                    line = resp.readline()
-                except (OSError, http.client.HTTPException) as e:
-                    raise ModelError("the local model stopped part-way: %s" % e)
-                if not line:
-                    break
-                try:
-                    msg = json.loads(line)
-                except ValueError:
-                    continue
-                if msg.get("error"):
-                    raise ModelError(str(msg["error"]))
-                piece = (msg.get("message") or {}).get("content") or ""
-                if piece:
-                    content += piece
-                    if time.time() - last >= every:
-                        last = time.time()
-                        draft = partial_json(content)
-                        if isinstance(draft, dict):
-                            yield "partial", draft
-                if msg.get("done"):
-                    break
+                raise ModelError("the model wrote no answer" + (
+                    " (it spent its time thinking; a model whose name ends in -instruct avoids this)" if thought else ""))
             try:
                 answer = _parse_answer(content)
             except ModelError:
-                answer = partial_json(content)   # cut off at the length cap: keep what was written
+                answer = partial_json(content)   # stopped at the length cap: keep what was written
                 if not isinstance(answer, dict) or not answer:
-                    raise
+                    raise ModelError("the model's answer was not in the expected form (it began: %r)" % content[:60])
+            finished = True
         except ModelError as e:
             failed = e
             raise
@@ -264,9 +300,11 @@ class LocalModel:
                 conn.close()
             detail = {"purpose": purpose, "model": model, "sent_chars": sent, "images": 0,
                       "received_chars": len(content), "seconds": round(time.time() - t0, 1)}
+            if thought:
+                detail["thinking_chars"] = thought
             if failed is not None:
                 detail["error"] = str(failed)[:160]
-            elif not content.strip() or "answer" not in locals():
+            elif not finished:
                 detail["error"] = "stopped early (you asked something else)"
             self.ledger.record("model", detail)
         yield "done", answer

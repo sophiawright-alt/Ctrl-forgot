@@ -247,7 +247,9 @@ function waiting(card, ev) {
   const body = card.querySelector(".draft");
   if (!body || body.querySelector(".headline, ul")) return;
   const since = (body.querySelector("[data-since]") || {}).dataset;
-  const why = ev.loading ? "Loading the model into memory first. This happens once per session and can take up to a minute on a laptop."
+  const why = ev.thinking ? "The model is reasoning before it writes. This version of the model always does that, which is slow. " +
+      "Installing one whose name ends in -instruct (see the README) makes answers start much sooner."
+    : ev.loading ? "Loading the model into memory first. This happens once per session and can take up to a minute on a laptop."
     : ev.waiting_for_image ? "Waiting for the model to finish reading an image, then it will start on this."
     : "Reading your notes. The first words usually appear within a few seconds.";
   clear(body).appendChild(h("p", { class: "loading", "data-since": since ? since.since : String(Date.now()) }, why));

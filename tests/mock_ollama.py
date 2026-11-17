@@ -12,6 +12,8 @@ TRANSCRIPTS = {
 SEEN = []
 DELAY = float(__import__('os').environ.get('MOCK_DELAY', '0.004'))
 STOPPED = []
+THINKERS = set()
+MODE = {'think': 'none'}   # none | think (reasons first) | empty (silent when think=false)
 LOADED = set()
 CHATS = []
 MODELS = {"qwen3-vl:8b": "8.8B", "nomic-embed-text:latest": "137M"}
@@ -43,6 +45,8 @@ class H(BaseHTTPRequestHandler):
         SEEN.append((self.path, body.get("model")))
         if self.path == "/api/show":
             caps = ["embedding"] if "embed" in body["model"] else ["completion", "vision"]
+            if body["model"] in THINKERS:
+                caps.append("thinking")
             return self._send({"capabilities": caps})
         if self.path == "/api/embed":
             vecs = []
@@ -77,11 +81,18 @@ class H(BaseHTTPRequestHandler):
                        "watch_outs": [{"point": "No source for this one.", "sources": [99]}],
                        "gaps": ["Whether Dan has confirmed Kofi."]}
             text = json.dumps(out)
+            if MODE["think"] == "empty" and body.get("think") is False:
+                text = ""
             if body.get("stream"):                   # like Ollama: one JSON line per few characters
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson")
                 self.end_headers()
                 try:
+                    if MODE["think"] == "think":
+                        for k in range(5):
+                            line = {"message": {"role": "assistant", "content": "", "thinking": "hmm, let me see. "}, "done": False}
+                            self.wfile.write((json.dumps(line) + "\n").encode())
+                            self.wfile.flush()
                     for i in range(0, len(text), 9):
                         line = {"message": {"role": "assistant", "content": text[i:i + 9]}, "done": False}
                         self.wfile.write((json.dumps(line) + "\n").encode())

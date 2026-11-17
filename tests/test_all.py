@@ -133,6 +133,44 @@ class Speed(unittest.TestCase):
         finally:
             del os.environ["SECOND_BRAIN_MODEL"]
 
+    def test_direct_answering_models_preferred(self):
+        mock_ollama.MODELS["qwen3-vl:4b"] = "4.4B"
+        mock_ollama.MODELS["qwen3-vl:4b-instruct"] = "4.4B"
+        mock_ollama.THINKERS.update({"qwen3-vl:4b", "qwen3-vl:8b"})
+        try:
+            st = self.model.refresh(force=True)
+            self.assertEqual((st["chat"], st["vision"]), ("qwen3-vl:4b-instruct", "qwen3-vl:4b-instruct"))
+        finally:
+            mock_ollama.THINKERS.clear()
+
+    def run_stream(self, **kw):
+        from secondbrain.llm import PREP_SCHEMA
+        return list(self.model.stream_json("qwen3-vl:8b", "system", "brief me", PREP_SCHEMA, every=0, **kw))
+
+    def test_thinking_model_still_answers(self):
+        mock_ollama.MODE["think"] = "think"
+        try:
+            got = self.run_stream()
+        finally:
+            mock_ollama.MODE["think"] = "none"
+        self.assertEqual(got[0], ("thinking", True))
+        self.assertEqual(got[-1][1]["headline"], "Priya wants to lead the Helix pilot.")
+        self.assertGreater(self.ledger.events[-1]["detail"]["thinking_chars"], 0)
+
+    def test_silent_answer_is_retried(self):
+        mock_ollama.MODE["think"] = "empty"          # an Ollama version that says nothing with think=false
+        try:
+            got = self.run_stream()
+        finally:
+            mock_ollama.MODE["think"] = "none"
+        self.assertEqual(got[-1][0], "done")
+        self.assertIn("qwen3-vl:8b", self.model._no_think)
+
+    def test_length_cap_keeps_what_was_written(self):
+        got = self.run_stream(max_chars=150)
+        self.assertEqual(got[-1][0], "done")
+        self.assertEqual(got[-1][1]["headline"], "Priya wants to lead the Helix pilot.")
+
     def test_one_model_does_both(self):
         st = self.model.refresh(force=True)
         self.assertEqual((st["chat"], st["vision"]), ("qwen3-vl:8b", "qwen3-vl:8b"))
@@ -411,7 +449,7 @@ class EndToEnd(unittest.TestCase):
         kinds = [e["type"] for e in ev]
         self.assertEqual((kinds[0], kinds[1], kinds[-1]), ("start", "status", "final"))
         model, options, chars = mock_ollama.CHATS[-1]
-        self.assertEqual((options.get("num_ctx"), options.get("num_predict")), (4096, 420))
+        self.assertEqual((options.get("num_ctx"), options.get("num_predict")), (8192, None))  # no cap that thinking could eat
         self.assertLess(chars, 7500)                                                         # a short request
         self.assertGreaterEqual(kinds.count("partial"), 2)
         sizes = [len(json.dumps(e["draft"])) for e in ev if e["type"] == "partial"]

@@ -442,7 +442,7 @@ def _final(result):
     return out
 
 
-def _stream(session, model, system, user, schema, purpose, used, draft_of, finish, max_tokens):
+def _stream(session, model, system, user, schema, purpose, used, draft_of, finish, max_chars):
     yield {"type": "start", "model": model, "excerpts_sent": len(used)}
     # Tell the page what the wait is for, so a slow start is not a mystery.
     yield {"type": "status", "loading": not session.model.loaded(model),
@@ -451,8 +451,10 @@ def _stream(session, model, system, user, schema, purpose, used, draft_of, finis
     session.foreground_begin()                  # background image reading waits until this is done
     try:
         for kind, obj in session.model.stream_json(model, system, user, schema, purpose=purpose,
-                                                   max_tokens=max_tokens):
-            if kind == "partial":
+                                                   max_chars=max_chars):
+            if kind == "thinking":
+                yield {"type": "status", "thinking": True}
+            elif kind == "partial":
                 yield {"type": "partial", "draft": draft_of(obj)}
             else:
                 out = obj
@@ -493,7 +495,7 @@ def prep_ai_events(session, query):
                 "dropped": d1 + d2, "excerpts_sent": len(used)}
 
     for event in _stream(session, model, llm.PREP_SYSTEM, user, llm.PREP_SCHEMA,
-                         "write meeting brief: %s" % base["query"][:60], used, draft_of, finish, 420):
+                         "write meeting brief: %s" % base["query"][:60], used, draft_of, finish, 2600):
         yield event
 
 
@@ -522,7 +524,7 @@ def ask_ai_events(session, question):
                 "caveat": str(out.get("caveat") or ""), "dropped": dropped, "excerpts_sent": len(used)}
 
     for event in _stream(session, model, llm.ASK_SYSTEM, user, llm.ASK_SCHEMA,
-                         "answer: %s" % base["question"][:60], used, draft_of, finish, 260):
+                         "answer: %s" % base["question"][:60], used, draft_of, finish, 1400):
         yield event
 
 
