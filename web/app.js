@@ -62,8 +62,9 @@ function renderFolders(s) {
       u.notes.forEach(n => list.appendChild(h("li", null,
         h("span", { class: "nm", title: "Open " + n.id, on: { click: () => openSource({ doc: n.id }) } }, n.name),
         n.kind === "image" && n.status === "ready"
-          ? h("span", { class: "st" }, n.image_kind === "screenshot" ? "screenshot" : "handwriting") : null,
-        STATUS[n.status] ? h("span", { class: "st" + (n.status === "reading" || n.status === "queued" ? " busy" : "") }, STATUS[n.status]) : null,
+          ? h("span", { class: "st" }, /\.pdf$/i.test(n.id) ? "scanned PDF" : n.image_kind === "screenshot" ? "screenshot" : "handwriting") : null,
+        STATUS[n.status] ? h("span", { class: "st" + (n.status === "reading" || n.status === "queued" ? " busy" : ""),
+          title: n.note || "" }, STATUS[n.status]) : null,
         h("button", { class: "hide", on: { click: () => hide(n.id, true) } }, "hide"))));
       u.hidden.forEach(id => list.appendChild(h("li", { class: "hidden" },
         h("span", { class: "nm" }, id.split("/").slice(1).join("/") || id),
@@ -335,12 +336,16 @@ async function openSource(e) {
   const isImage = doc.kind === "image";
   const info = [
     h("h2", null, doc.id),
+    doc.status === "failed" || doc.status === "empty" ? h("p", { class: "card honest" }, "I could not read this note: " + (doc.note || "unknown reason") + ".") : null,
     h("p", { class: "meta" }, "Dated " + doc.date + " (from the " + doc.date_source + ")" +
       (e.why ? ". Shown because it " + e.why + "." : ".")),
-    isImage ? h("p", { class: "card honest" }, "This is my reading of " + (doc.image_kind === "screenshot" ? "a screenshot" : "handwriting") +
+    isImage ? h("p", { class: "card honest" }, "This is my reading of " + (/\.pdf$/i.test(doc.id) ? "a scanned PDF" : doc.image_kind === "screenshot" ? "a screenshot" : "handwriting") +
       ", done by the model on this device" + (doc.uncertain ? ". Words marked [?] are ones I was unsure of" : "") +
       ". The picture is the truth; my transcription is a guess. It exists only in memory.") : null,
-    isImage ? h("div", { class: "split" }, h("img", { src: "/api/image?id=" + encodeURIComponent(doc.id), alt: "Original image of the note" }), src) : src,
+    isImage ? h("div", { class: "split" },
+      h("div", null, Array.from({ length: Math.max(1, doc.pages) }, (_, i) => h("img", {
+        src: "/api/image?id=" + encodeURIComponent(doc.id) + "&page=" + (i + 1),
+        alt: "Page " + (i + 1) + " of the original" }))), src) : src,
     h("p", { class: "path" }, "Fingerprint when I read it: " + doc.fingerprint + "…  The file itself has not been touched."),
   ];
   openModal(info);

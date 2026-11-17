@@ -36,7 +36,14 @@ The app picks a model automatically. To force one: `SECOND_BRAIN_MODEL=gemma3:4b
 
 ## What it can read
 
-Typed notes (`.txt`, `.md`, `.csv`), Word documents (`.docx`), and photos or screenshots (`.jpg`, `.png`). Word files are read straight from memory; nothing is unpacked to disk. Old-style `.doc` files and PDFs are skipped: save them as `.docx` or text first.
+| Kind | Files | How |
+|---|---|---|
+| Typed notes | `.txt`, `.md`, `.csv` | Read directly |
+| Word | `.docx` | Read from memory; nothing is unpacked to disk |
+| PDF | `.pdf` | Text is read directly. Scanned PDFs (pictures of pages) go to the local vision model, like a photo |
+| Handwriting, whiteboards, screenshots | `.jpg`, `.png` | Local vision model |
+
+Not read: old `.doc` files (save as `.docx`), locked PDFs (the app says so; use Print, then "Microsoft Print to PDF", to make an unlocked copy), and pictures pasted inside Word files.
 
 ## Handwriting
 
@@ -97,6 +104,7 @@ secondbrain/guard.py     the lock (no writes, no network, no other programs, onl
 secondbrain/ledger.py    the receipt
 secondbrain/session.py   folder switches, loading notes, reading images, forgetting
 secondbrain/index.py     in-memory search (keywords, typos, synonyms)
+secondbrain/pdftext.py   reading PDFs with nothing but Python
 secondbrain/dates.py     "3 Nov", "by Fri", "EOW"
 secondbrain/extract.py   actions, decisions, questions, what changed, what looks done
 secondbrain/brief.py     meeting prep and find; the check on the model's answers
@@ -106,12 +114,13 @@ web/                     the page (plain HTML, CSS, JavaScript). Looks: web/styl
 sample_notes/            fictional manager notes, made up for this prototype
 tools/fingerprint.py     independent "did anything change?" check
 tools/make_sample_images.py   regenerates the sample images (development only, needs Pillow)
+tools/make_sample_pdf.py      regenerates the sample PDF (development only, needs reportlab)
 tests/                   python3 -B tests/test_all.py
 ```
 
 ## Ideas for building on it
 
-- More content: PDFs, calendar exports, email exports, voice memos (local speech-to-text).
+- More content: calendar exports, email exports, voice memos (local speech-to-text).
 - A "capture" moment: paste rough notes, get actions and decisions pulled out, still without saving.
 - Stream the model's answer word by word so it feels faster on slow laptops.
 - Per-meeting scopes ("for this 1:1, only these two folders").

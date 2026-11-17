@@ -68,6 +68,106 @@ class Rules(unittest.TestCase):
         self.assertEqual([(f[0], f[1], f[3], f[4]) for f in found], [("a", "b", "£40k", "£28k")])
 
 
+class Word(unittest.TestCase):
+    def test_strict_and_protected(self):
+        import io, zipfile
+        from secondbrain.session import docx_text, _docx_problem
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:     # "Strict" Word uses a different namespace
+            z.writestr("word/document.xml", '<w:document xmlns:w="http://purl.oclc.org/ooxml/wordprocessingml/main">'
+                       '<w:body><w:p><w:r><w:t>Tom to send the list by Fri</w:t></w:r></w:p></w:body></w:document>')
+        self.assertEqual(docx_text(buf.getvalue()), "Tom to send the list by Fri")
+        self.assertIn("protected", _docx_problem(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1rest", None))
+
+
+def _pdf(objects, root=1, extra_trailer=""):
+    """Build a small PDF by hand, so these tests need no PDF library."""
+    out, offsets = bytearray(b"%PDF-1.4\n"), []
+    for i, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % i + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    for o in offsets:
+        out += b"%010d 00000 n \n" % o
+    out += b"trailer\n<< /Size %d /Root %d 0 R %s >>\nstartxref\n%d\n%%%%EOF" % (
+        len(objects) + 1, root, extra_trailer.encode(), xref)
+    return bytes(out)
+
+
+def _stream(dict_body, data):
+    return b"<< " + dict_body + b" /Length %d >>\nstream\n" % len(data) + data + b"\nendstream"
+
+
+def text_pdf(lines):
+    import zlib
+    content = b"BT /F1 12 Tf 14 TL 72 760 Td " + b" ".join(b"(%s) Tj T*" % l.encode("latin-1") for l in lines) + b" ET"
+    return _pdf([b"<< /Type /Catalog /Pages 2 0 R >>",
+                 b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                 b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+                 b"/Resources << /Font << /F1 5 0 R >> >> >>",
+                 _stream(b"/Filter /FlateDecode", zlib.compress(content)),
+                 b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"])
+
+
+def scan_pdf(jpeg, w=1000, h=1200):
+    return _pdf([b"<< /Type /Catalog /Pages 2 0 R >>",
+                 b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                 b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R "
+                 b"/Resources << /XObject << /Im0 5 0 R >> >> >>",
+                 _stream(b"", b"q 595 0 0 842 0 0 cm /Im0 Do Q"),
+                 _stream(b"/Type /XObject /Subtype /Image /Width %d /Height %d /ColorSpace /DeviceRGB "
+                         b"/BitsPerComponent 8 /Filter /DCTDecode" % (w, h), jpeg)])
+
+
+class PDF(unittest.TestCase):
+    def test_text(self):
+        from secondbrain import pdftext
+        text, images = pdftext.extract(text_pdf(["Agreed: Zebra budget \xa312k", "Sam to send the plan by Fri"]))
+        self.assertEqual(text, "Agreed: Zebra budget \u00a312k\nSam to send the plan by Fri")
+        self.assertEqual(images, [])
+
+    def test_scan_gives_page_pictures(self):
+        from secondbrain import pdftext
+        jpeg = b"\xff\xd8\xff\xe0" + b"\0" * 5000 + b"\xff\xd9"
+        text, images = pdftext.extract(scan_pdf(jpeg))
+        self.assertEqual((text, images), ("", [jpeg]))
+
+    def test_locked(self):
+        from secondbrain import pdftext, session
+        locked = _pdf([b"<< /Type /Catalog >>", b"<< /Filter /Standard >>"], extra_trailer="/Encrypt 2 0 R")
+        with self.assertRaises(pdftext.PDFError) as e:
+            pdftext.extract(locked)
+        self.assertIn("locked PDF", session._pdf_problem(e.exception))
+
+    def test_scanned_pdf_is_read_by_the_vision_model(self):
+        import shutil
+        import tempfile
+        from secondbrain.ledger import Ledger
+        from secondbrain.llm import LocalModel
+        from secondbrain.session import Session
+        mock = mock_ollama.start(0)
+        folder = tempfile.mkdtemp()
+        try:
+            os.mkdir(os.path.join(folder, "scans"))
+            with open(os.path.join(ROOT, "sample_notes", "photos", "2026-11-10 notebook page.jpg"), "rb") as f:
+                jpeg = f.read()
+            with open(os.path.join(folder, "scans", "2026-11-10 scanned notebook.pdf"), "wb") as f:
+                f.write(scan_pdf(jpeg))
+            s = Session(folder, Ledger(), LocalModel(Ledger(), port=mock.server_address[1]))
+            s.set_allowed("scans", True)
+            for _ in range(40):
+                d = s.docs["scans/2026-11-10 scanned notebook.pdf"]
+                if d.status == "ready":
+                    break
+                time.sleep(0.1)
+            self.assertEqual((d.status, d.kind), ("ready", "image"))
+            self.assertIn("P wants to LEAD the Helix pilot", d.lines)
+        finally:
+            mock.shutdown()
+            shutil.rmtree(folder)
+
+
 class EndToEnd(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -101,10 +201,10 @@ class EndToEnd(unittest.TestCase):
             call("/api/allow", {"folder": f, "on": True})
         for _ in range(40):
             _, s = call("/api/state")
-            if not s["reading"] and s["notes_in_memory"] == 12:
+            if not s["reading"] and s["notes_in_memory"] == 13:
                 break
             time.sleep(0.25)
-        self.assertEqual(s["notes_in_memory"], 12)
+        self.assertEqual(s["notes_in_memory"], 13)
         self.assertFalse(any(p.startswith("private-hr") for p in s["receipt"]["files"]))
         self.assertEqual({n["image_kind"] for u in s["units"] for n in u["notes"] if n["kind"] == "image"},
                          {"handwriting", "screenshot"})
@@ -135,6 +235,13 @@ class EndToEnd(unittest.TestCase):
         _, a = call("/api/ask", {"question": "pilot user list"})
         self.assertTrue(any(x["doc"].endswith(".docx") and "user list" in x["text"] for x in a["snippets"]))
 
+    def test_5c_reads_pdfs(self):
+        _, a = call("/api/ask", {"question": "which cost centre for Helix?"})
+        self.assertTrue(any(x["doc"].endswith(".pdf") and "CC-4471" in x["text"] for x in a["snippets"]))
+        _, b = call("/api/prep", {"query": "Mei"})
+        self.assertTrue(any("budget letter" in x["text"] and x["resolved_by"]["doc"].endswith(".pdf")
+                            for x in b["probably_done"]))
+
     def test_6_honest_when_it_is_not_there(self):
         _, a = call("/api/ask", {"question": "What is Priya's salary?"})
         self.assertEqual((a["verdict"], a["missing"]), ("none", ["salary"]))
@@ -143,7 +250,7 @@ class EndToEnd(unittest.TestCase):
     def test_7_switching_off_forgets(self):
         call("/api/allow", {"folder": "photos", "on": False})
         _, s = call("/api/state")
-        self.assertEqual(s["notes_in_memory"], 10)
+        self.assertEqual(s["notes_in_memory"], 11)
         _, b = call("/api/prep", {"query": "Kofi"})
         self.assertFalse(b["found"])
         self.assertEqual(call("/api/source?id=photos/2026-11-10%20notebook%20page.jpg")[0], 404)

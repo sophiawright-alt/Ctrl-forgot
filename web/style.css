@@ -149,6 +149,7 @@ li.change-head:not(:first-child) { margin-top: 12px; }
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
 .split .src { margin-top: 0; }
 @media (max-width: 760px) { .split { grid-template-columns: 1fr; } }
+.split img + img { margin-top: 10px; }
 .split img { max-width: 100%; display: block; border: 1px solid var(--line); border-radius: 4px; }
 table.tests { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 14px; }
 table.tests td { padding: 10px 6px 10px 0; border-top: 1px solid var(--line); vertical-align: top; }

@@ -18,6 +18,7 @@ from .index import Index, chunk_doc
 
 TEXT_TYPES = {".txt", ".md", ".markdown", ".text", ".csv", ".log", ".org", ".url", ".docx"}
 IMAGE_TYPES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+PDF_TYPES = {".pdf"}
 MAX_TEXT, MAX_IMAGE = 5_000_000, 20_000_000
 LOOSE = "(loose files)"
 
@@ -37,6 +38,7 @@ class Doc:
         self.image_kind = None
         self.uncertain = False
         self.note = ""
+        self.images = None                    # page pictures of a scanned PDF (memory only)
 
     def set_text(self, text):
         self.lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -95,7 +97,7 @@ class Session:
                         continue
                     if e.is_dir():
                         names.append(e.name)
-                    elif os.path.splitext(e.name)[1].lower() in TEXT_TYPES | IMAGE_TYPES:
+                    elif os.path.splitext(e.name)[1].lower() in TEXT_TYPES | IMAGE_TYPES | PDF_TYPES:
                         loose = True
         except OSError:
             pass
@@ -152,7 +154,7 @@ class Session:
                         stack.append(e.path)
                     continue
                 ext = os.path.splitext(e.name)[1].lower()
-                if ext not in TEXT_TYPES | IMAGE_TYPES:
+                if ext not in TEXT_TYPES | IMAGE_TYPES | PDF_TYPES:
                     skipped += 1
                     continue
                 yield os.path.relpath(e.path, self.root), e.path, e.stat()
@@ -162,7 +164,7 @@ class Session:
         ext = os.path.splitext(path)[1].lower()
         kind = "image" if ext in IMAGE_TYPES else "text"
         doc = Doc(rel, unit, path, kind, stat)
-        if stat.st_size > (MAX_IMAGE if kind == "image" else MAX_TEXT):
+        if stat.st_size > (MAX_IMAGE if (kind == "image" or ext in PDF_TYPES) else MAX_TEXT):
             doc.status, doc.note = "failed", "too large to read"
             return doc
         try:
@@ -172,12 +174,30 @@ class Session:
             doc.status, doc.note = "failed", "could not be opened: %s" % e
             return doc
         doc.sha256 = hashlib.sha256(data).hexdigest()
+        if ext in PDF_TYPES:
+            from . import pdftext
+            try:
+                text, pages = pdftext.extract(data)
+            except pdftext.PDFError as e:
+                doc.status, doc.note = "failed", _pdf_problem(e)
+                return doc
+            except Exception as e:                   # a damaged or unusual file
+                doc.status, doc.note = "failed", "PDF could not be read (%s)" % str(e)[:80]
+                return doc
+            if text.strip():
+                doc.set_text(text)
+            elif pages:                              # a scan: read the pictures like a photo
+                doc.kind, doc.images, doc.status = "image", pages, "queued"
+                self._jobs.put(("transcribe", doc.id, doc.sha256))
+            else:
+                doc.status, doc.note = "empty", "no text in this PDF, and no page pictures I can read"
+            return doc
         if kind == "text":
             if ext == ".docx":
                 try:
                     text = docx_text(data)
-                except Exception:
-                    doc.status, doc.note = "failed", "not a readable Word document"
+                except Exception as e:
+                    doc.status, doc.note = "failed", _docx_problem(data, e)
                     return doc
             else:
                 text = data.decode("utf-8", "replace")
@@ -254,13 +274,23 @@ class Session:
                 doc.status, doc.note = "no_model", "no local model that can read images is installed"
                 return
             doc.status = "reading"
-            path = doc.path
+            path, pages = doc.path, doc.images
         try:
-            with open(path, "rb") as f:
-                data = f.read()
-            out = self.model.chat_json(vision, llm.TRANSCRIBE_SYSTEM,
-                                       "Transcribe this image.", llm.TRANSCRIBE_SCHEMA,
-                                       images=[data], purpose="read image %s" % doc_id)
+            if pages is None:
+                with open(path, "rb") as f:
+                    pages = [f.read()]
+            texts, kinds = [], []
+            for n, img in enumerate(pages, 1):
+                out = self.model.chat_json(vision, llm.TRANSCRIBE_SYSTEM,
+                                           "Transcribe this image.", llm.TRANSCRIBE_SCHEMA, images=[img],
+                                           purpose="read image %s%s" % (doc_id, " page %d" % n if len(pages) > 1 else ""))
+                t = str(out.get("text") or "").replace("\\n", "\n").strip()
+                if t and out.get("kind") != "no_text":
+                    texts.append(("[page %d]\n" % n if len(pages) > 1 else "") + t)
+                    kinds.append(out.get("kind") or "handwriting")
+                with self.lock:
+                    if self.docs.get(doc_id) is not doc:
+                        return                   # switched off while reading: stop and discard
         except Exception as e:
             with self.lock:
                 if self.docs.get(doc_id) is doc:
@@ -269,7 +299,8 @@ class Session:
         with self.lock:
             if self.docs.get(doc_id) is not doc:
                 return                           # permission was withdrawn while reading: discard
-            text = str(out.get("text") or "").replace("\\n", "\n").strip()
+            text = "\n\n".join(texts)
+            out = {"kind": kinds[0] if kinds else "no_text"}
             doc.image_kind = out.get("kind") or "handwriting"
             if not text or doc.image_kind == "no_text":
                 doc.status, doc.note = "empty", "no readable text found"
@@ -367,7 +398,27 @@ class Session:
         return receipt
 
 
-_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+def _pdf_problem(error):
+    if str(error) == "encrypted":
+        return ("locked PDF (a password, or copy/print restrictions). Open it and use Print, then "
+                "'Microsoft Print to PDF', to make an unlocked copy")
+    if str(error) == "not a PDF":
+        return "not really a PDF, despite the name"
+    return "PDF could not be read (%s)" % error
+
+
+def _docx_problem(data, error):
+    """A plain reason a .docx could not be read, so the user knows what to do."""
+    if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return ("protected Word file (a password or a sensitivity label such as 'Confidential'). "
+                "Remove the protection or copy the text into a new document")
+    if data[:2] != b"PK":
+        return "not really a .docx (probably an old .doc renamed). Open it in Word and Save As .docx"
+    return "Word file could not be read (%s)" % str(error)[:80]
+
+
+def _local(tag):
+    return tag.rsplit("}", 1)[-1]
 
 
 def docx_text(data):
@@ -375,28 +426,40 @@ def docx_text(data):
 
     A .docx is a zip of XML, so this needs nothing but Python itself, and it
     reads from the bytes already in memory: nothing is unpacked to disk.
+    Tags are matched by name only, so both the normal and the "Strict"
+    Word formats work.
     """
     import io
     import zipfile
     import xml.etree.ElementTree as ET
     with zipfile.ZipFile(io.BytesIO(data)) as z:
-        root = ET.fromstring(z.read("word/document.xml"))
+        names = z.namelist()
+        main = "word/document.xml" if "word/document.xml" in names else next(
+            (n for n in names if n.startswith("word/document") and n.endswith(".xml")), None)
+        if not main:
+            raise ValueError("no document body inside")
+        root = ET.fromstring(z.read(main))
     lines = []
-    for para in root.iter(_W + "p"):
-        parts = []
+    for para in root.iter():
+        if _local(para.tag) != "p":
+            continue
+        parts, style, listed = [], "", False
         for node in para.iter():
-            if node.tag == _W + "t":
+            name = _local(node.tag)
+            if name == "t":
                 parts.append(node.text or "")
-            elif node.tag == _W + "tab":
+            elif name == "tab":
                 parts.append("\t")
-            elif node.tag in (_W + "br", _W + "cr"):
+            elif name in ("br", "cr"):
                 parts.append("\n")
+            elif name == "pStyle":
+                style = next((v for k, v in node.attrib.items() if _local(k) == "val"), "")
+            elif name == "numPr":
+                listed = True
         text = "".join(parts)
-        style = para.find("%spPr/%spStyle" % (_W, _W))
-        name = (style.get(_W + "val") or "") if style is not None else ""
-        if name.lower().startswith(("heading", "title")) and text.strip():
+        if text.strip() and style.lower().startswith(("heading", "title")):
             text = "# " + text                       # keep headings recognisable
-        elif para.find("%spPr/%snumPr" % (_W, _W)) is not None and text.strip():
+        elif text.strip() and listed:
             text = "- " + text                       # bulleted or numbered list item
         lines.extend(text.split("\n"))
     return "\n".join(lines)

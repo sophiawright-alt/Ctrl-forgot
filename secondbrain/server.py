@@ -84,14 +84,21 @@ def make_handler(session, ledger):
                 doc = session.docs.get((q.get("id") or [""])[0])
                 if not doc:
                     return self._send(404, {"error": "I no longer have that note in memory."})
+                # (a note that failed to read still opens, so the reason can be shown)
                 out = doc.public()
-                out.update({"lines": doc.lines, "date_source": doc.date_source,
+                out.update({"lines": doc.lines, "date_source": doc.date_source, "pages": len(doc.images or []),
                             "fingerprint": (doc.sha256 or "")[:16]})
                 return self._send(200, out)
             if url.path == "/api/image":
                 doc = session.docs.get((q.get("id") or [""])[0])
                 if not doc or doc.kind != "image":
                     return self._send(404, {"error": "not found"})
+                if doc.images:                       # a page of a scanned PDF, held in memory
+                    try:
+                        img = doc.images[int((q.get("page") or ["1"])[0]) - 1]
+                    except (ValueError, IndexError):
+                        return self._send(404, {"error": "no such page"})
+                    return self._send(200, img, "image/jpeg" if img[:2] == b"\xff\xd8" else "image/png")
                 try:
                     with open(doc.path, "rb") as f:
                         data = f.read()
