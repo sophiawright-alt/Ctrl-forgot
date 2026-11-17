@@ -366,9 +366,11 @@ async function runAsk() {
   }
   if (a.changes.length) out.appendChild(h("div", { class: "card changed" }, h("h3", null, "Your notes disagree on this"),
     h("p", { class: "sub" }, "The newer one is probably right."), h("ul", { class: "items" }, a.changes.map(changeCard))));
-  add(out, section(a.verdict === "none" ? "Closest notes (these do not answer it)" : "What your notes say",
-    "Newest first.", a.snippets,
-    s => row(s, s.text, cite(s.n))));
+  const notesTitle = a.verdict === "none" ? "Closest notes (these do not answer it)"
+    : a.not_together ? "What your notes say about " + a.not_together.names.join(" and ")
+    : "What your notes say";
+  const notesCard = section(notesTitle, "Newest first.", a.snippets, s => row(s, s.text, cite(s.n)));
+  add(out, notesCard);
   if (!ai) return;
   streamAI("ask", "/api/ask/ai/stream", { question: q }, ev => {
     if (run !== askRun) return;
@@ -386,7 +388,14 @@ async function runAsk() {
     if (!s.available) { ai.className = "card"; ai.appendChild(h("p", { class: "sub" }, s.reason)); return; }
     ai.appendChild(h("p", { class: "sub" }, "Written by " + s.model + " on this device, then checked against your notes."));
     if (s.found) ai.appendChild(points(s.answer));
-    else ai.appendChild(h("p", { class: "headline" }, "Your notes do not answer this."));
+    else {
+      ai.appendChild(h("p", { class: "headline" }, "Your notes do not answer this as asked."));
+      if (s.answer.length) add(ai, [h("h4", null, "What they do say"), points(s.answer)]);
+      // the notes listed below are related, not an answer: say so
+      if (notesCard && notesCard.firstChild.textContent === "What your notes say")
+        notesCard.firstChild.textContent = "Related notes (these do not answer it as asked)";
+      out.querySelectorAll(".card.changed > h3").forEach(t => { t.textContent = "Related notes that disagree"; });
+    }
     if (s.caveat) ai.appendChild(h("p", { class: "sub" }, s.caveat));
     if (s.dropped) ai.appendChild(h("p", { class: "sub" }, "I removed " + plural(s.dropped, "point") + " I could not trace back to a note."));
   });

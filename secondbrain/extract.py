@@ -219,7 +219,14 @@ def find_people(docs, limit=8):
             m = _PEOPLE_LINE.match(line)
             if m:
                 for part in re.split(r"[,/&+;]|\band\b", m.group(1)):
-                    first = part.strip().split(" ")[0].strip("()@.")
+                    words = part.strip().split()
+                    inside = re.findall(r"\(([A-Z][a-z]{1,14})\)", part)
+                    if inside:                       # "Helix account manager (Rina)": the person is Rina
+                        first = inside[0]
+                    elif len(words) <= 2:            # "Tom" or "Mei Lin"
+                        first = words[0].strip("()@.") if words else ""
+                    else:                            # a description, not a name
+                        continue
                     if _NAME.match(first) and first not in NOT_NAMES:
                         candidates[first] = candidates.get(first, 0) + 3
             for m in _ONE_TO_ONE.finditer(line):
@@ -230,7 +237,9 @@ def find_people(docs, limit=8):
                 if n not in NOT_NAMES:
                     candidates[n] = candidates.get(n, 0) + 2
             m = _OWNER_TO.match(line)
-            if m and m.group("owner") not in NOT_NAMES and m.group("owner") not in ("I", "Me"):
+            # "Tom to send…" is a person; "Helix will hold the price" could be a company
+            if m and re.match(r"\s*(?:[-*+>•]\s*)?@?%s\s+to\s" % m.group("owner"), line) and \
+                    m.group("owner") not in NOT_NAMES and m.group("owner") not in ("I", "Me"):
                 candidates[m.group("owner")] = candidates.get(m.group("owner"), 0) + 2
     blob = "\n".join(text_all)
     scored = []

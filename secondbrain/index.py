@@ -66,7 +66,7 @@ def stems(text, keep_stop=False):
 # Words people swap freely. If you ask what was "decided" and the note says
 # "agreed", that should still count as a match.
 SYNONYMS = [
-    "decide decided decision agreed agreement confirmed approved settled signed-off",
+    "decide decided decision agreed agreement confirmed approved settled",
     "start begin kick-off launch go-live",
     "budget cost spend money price funding",
     "deadline due",

@@ -499,9 +499,26 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(any("budget letter" in x["text"] and x["resolved_by"]["doc"].endswith(".pdf")
                             for x in b["probably_done"]))
 
+    def test_5d_questions_about_a_named_thing(self):
+        _, a = call("/api/ask", {"question": "When does the Corvid pilot start?"})        # no Corvid pilot
+        self.assertEqual((a["verdict"], a["changes"]), ("partial", []))
+        self.assertEqual(a["not_together"]["names"], ["Corvid"])
+        self.assertTrue(all("Corvid" in x["text"] for x in a["snippets"]))
+        self.assertFalse(any("Helix pilot start" in x["text"] for x in a["snippets"]))
+        _, a = call("/api/ask", {"question": "when does the corvid pilot start"})          # typed in lower case
+        self.assertIn("not_together", a)
+        _, a = call("/api/ask", {"question": "which cost centre for Helix?"})              # "Helix" said elsewhere in the letter
+        self.assertTrue(any("CC-4471" in x["text"] for x in a["snippets"]))
+        _, a = call("/api/ask", {"question": "Why did we rule out Corvid?"})
+        self.assertEqual(a["verdict"], "found")
+        self.assertIn("audit trail", a["snippets"][0]["text"])
+
     def test_6_honest_when_it_is_not_there(self):
         _, a = call("/api/ask", {"question": "What is Priya's salary?"})
-        self.assertEqual((a["verdict"], a["missing"]), ("none", ["salary"]))
+        self.assertEqual((a["verdict"], a["missing"]), ("partial", ["salary"]))   # notes mention Priya, never her salary
+        self.assertEqual(a["not_together"], {"names": ["Priya"], "others": ["salary"]})
+        _, a = call("/api/ask", {"question": "What is the wifi password?"})
+        self.assertEqual(a["verdict"], "none")
         self.assertFalse(call("/api/ask/ai", {"question": "What is Priya's salary?"})[1]["available"])
 
     def test_7_switching_off_forgets(self):
