@@ -14,6 +14,7 @@ import base64
 import http.client
 import json
 import os
+import re
 import threading
 import time
 
@@ -37,6 +38,8 @@ class LocalModel:
         self._lock = threading.Lock()
         self._caps = {}
         self._no_think = set()
+        self._sizes = {}
+        self._warmed = {}
         self._checked = 0.0
         self.status = {"running": False, "chat": None, "vision": None, "embed": None,
                        "models": [], "cloud_models_ignored": [], "error": "not checked yet"}
@@ -95,6 +98,7 @@ class LocalModel:
                     cloud.append(name)           # would run off this device: never used
                 else:
                     local.append(name)
+                    self._sizes[name] = _billions(name, (m.get("details") or {}).get("parameter_size"))
             vision = [n for n in local if "vision" in self._capabilities(n)]
             chat = [n for n in local if "completion" in self._capabilities(n) and "ocr" not in n.lower()]
             embed = [n for n in local if "embedding" in self._capabilities(n)]
@@ -106,8 +110,14 @@ class LocalModel:
                             return n
                 return names[0] if names else None
 
-            v = os.environ.get("SECOND_BRAIN_VISION_MODEL") or prefer(vision, VISION_PREFERENCE)
-            c = os.environ.get("SECOND_BRAIN_MODEL") or (v if v in chat else prefer(chat, VISION_PREFERENCE))
+            size = lambda n: self._sizes.get(n) or 99.0
+            # Reading images happens in the background, so it gets the most accurate model.
+            v = os.environ.get("SECOND_BRAIN_VISION_MODEL") or prefer(
+                sorted(vision, key=lambda n: -size(n) if size(n) <= 12 else size(n)), VISION_PREFERENCE)
+            # Summaries are written while you wait, so they get the quickest sensible one:
+            # the smallest installed model of at least 3 billion parameters.
+            sensible = sorted((n for n in chat if size(n) >= 3), key=size) or sorted(chat, key=lambda n: -size(n))
+            c = os.environ.get("SECOND_BRAIN_MODEL") or (sensible[0] if sensible else None)
             e = os.environ.get("SECOND_BRAIN_EMBED_MODEL") or prefer(embed, ["embeddinggemma", "nomic", "mxbai"])
             for chosen in (v, c, e):
                 if chosen and chosen not in local:
@@ -125,7 +135,7 @@ class LocalModel:
         message = {"role": "user", "content": user}
         if images:
             message["images"] = [base64.b64encode(b).decode("ascii") for b in images]
-        body = {"model": model, "stream": False, "format": schema, "keep_alive": "10m",
+        body = {"model": model, "stream": False, "format": schema, "keep_alive": "30m",
                 "messages": [{"role": "system", "content": system}, message],
                 "options": {"temperature": 0.1, "num_ctx": 8192}}
         if model not in self._no_think:
@@ -152,7 +162,30 @@ class LocalModel:
                                      "seconds": round(time.time() - t0, 1)})
         return _parse_answer(content)
 
-    def stream_json(self, model, system, user, schema, purpose="", timeout=420, every=0.12):
+    def loaded(self, model):
+        """Is this model already in memory (so the answer can start straight away)?"""
+        try:
+            ps = self._request("GET", "/api/ps", timeout=3)
+        except ModelError:
+            return True                          # unknown: do not claim it is loading
+        names = {m.get("name") or m.get("model") for m in ps.get("models", [])}
+        return model in names
+
+    def warm(self, which="chat"):
+        """Load a model into memory ahead of time, so the first answer is not slowed by loading.
+        Sends no notes: it is an empty request."""
+        name = self.refresh().get(which)
+        if not name or time.time() - self._warmed.get(name, 0) < 20 * 60:
+            return
+        self._warmed[name] = time.time()
+        try:
+            self._request("POST", "/api/generate", {"model": name, "keep_alive": "30m"}, timeout=300)
+            self.ledger.record("note", {"message": "Loaded %s into memory on this device, ready for "
+                                                   "questions. No notes were sent." % name})
+        except ModelError:
+            self._warmed.pop(name, None)
+
+    def stream_json(self, model, system, user, schema, purpose="", timeout=420, every=0.12, max_tokens=None):
         """Like chat_json, but yields the answer while the model is still writing it.
 
         Yields ("partial", object) as the text grows (at most every `every`
@@ -161,9 +194,12 @@ class LocalModel:
         (the user asked something else) closes the connection, which tells
         Ollama to stop writing.
         """
-        body = {"model": model, "stream": True, "format": schema, "keep_alive": "10m",
+        body = {"model": model, "stream": True, "format": schema, "keep_alive": "30m",
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                "options": {"temperature": 0.1, "num_ctx": 8192}}
+                # A smaller working memory and a cap on answer length keep laptops quick.
+                "options": {"temperature": 0.1, "num_ctx": 4096}}
+        if max_tokens:
+            body["options"]["num_predict"] = max_tokens
         if model not in self._no_think:
             body["think"] = False
         sent = len(system) + len(user)
@@ -214,7 +250,12 @@ class LocalModel:
                             yield "partial", draft
                 if msg.get("done"):
                     break
-            answer = _parse_answer(content)
+            try:
+                answer = _parse_answer(content)
+            except ModelError:
+                answer = partial_json(content)   # cut off at the length cap: keep what was written
+                if not isinstance(answer, dict) or not answer:
+                    raise
         except ModelError as e:
             failed = e
             raise
@@ -256,6 +297,15 @@ class LocalModel:
             except ModelError:
                 pass
         return dropped
+
+
+def _billions(name, reported):
+    """Model size in billions of parameters, from Ollama's details or the tag (":8b")."""
+    for text in (reported or "", name.split(":")[-1]):
+        m = re.search(r"(\d+(?:\.\d+)?)\s*([bm])\b", str(text).lower())
+        if m:
+            return float(m.group(1)) / (1000.0 if m.group(2) == "m" else 1.0)
+    return None
 
 
 def _parse_answer(content):
@@ -410,14 +460,14 @@ RULES = (
     "3. Notes are messy and some are out of date. When excerpts disagree, the most recently dated one is probably "
     "current: say what changed and give both dates.\n"
     "4. Excerpts marked as handwriting may contain misread words. Treat [?] words as uncertain.\n"
-    "5. Plain English, one sentence per point, at most 28 words. Copy names, numbers and dates exactly.\n")
+    "5. Plain English, one short sentence per point, at most 22 words. Copy names, numbers and dates exactly.\n")
 PREP_SYSTEM = (
     "You help a busy manager get ready for a meeting using excerpts from their own scattered notes.\n" + RULES +
-    "6. headline: one sentence on where things stand. talking_points: up to 5 things to raise, most important first. "
-    "watch_outs: up to 3 things that changed, conflict, look stale or are overdue. "
-    "gaps: up to 3 things the manager would want to know for this meeting that the excerpts do NOT answer.")
+    "6. headline: one sentence on where things stand. talking_points: up to 3 things to raise, most important first. "
+    "watch_outs: up to 2 things that changed, conflict, look stale or are overdue. "
+    "gaps: up to 2 things the manager would want to know for this meeting that the excerpts do NOT answer.")
 ASK_SYSTEM = (
     "You answer a manager's question using excerpts from their own scattered notes.\n" + RULES +
     "6. If the excerpts do not answer the question, set found to false, leave answer empty, and say in caveat what "
     "is missing. A related excerpt that does not actually answer the question does not count.\n"
-    "7. answer: up to 3 points. caveat: one short sentence about uncertainty, or an empty string.")
+    "7. answer: up to 2 points. caveat: one short sentence about uncertainty, or an empty string.")

@@ -12,6 +12,9 @@ TRANSCRIPTS = {
 SEEN = []
 DELAY = float(__import__('os').environ.get('MOCK_DELAY', '0.004'))
 STOPPED = []
+LOADED = set()
+CHATS = []
+MODELS = {"qwen3-vl:8b": "8.8B", "nomic-embed-text:latest": "137M"}
 
 
 class H(BaseHTTPRequestHandler):
@@ -29,8 +32,10 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/api/tags":
-            return self._send({"models": [{"name": "qwen3-vl:8b"}, {"name": "nomic-embed-text:latest"},
-                                          {"name": "gpt-oss:120b-cloud", "remote_host": "https://ollama.com"}]})
+            return self._send({"models": [{"name": n, "details": {"parameter_size": MODELS[n]}} for n in MODELS] +
+                                         [{"name": "gpt-oss:120b-cloud", "remote_host": "https://ollama.com"}]})
+        if self.path == "/api/ps":
+            return self._send({"models": [{"name": n} for n in sorted(LOADED)]})
         self._send({}, 404)
 
     def do_POST(self):
@@ -48,8 +53,14 @@ class H(BaseHTTPRequestHandler):
                 vecs.append(v)
             return self._send({"embeddings": vecs})
         if self.path == "/api/generate":
+            if body.get("keep_alive") == 0:
+                LOADED.discard(body.get("model"))
+            else:
+                LOADED.add(body.get("model"))
             return self._send({"done": True})
         if self.path == "/api/chat":
+            LOADED.add(body.get("model"))
+            CHATS.append((body.get("model"), body.get("options", {}), sum(len(m["content"]) for m in body["messages"])))
             msg = body["messages"][-1]
             if msg.get("images"):
                 size = len(msg["images"][0])

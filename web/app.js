@@ -241,8 +241,23 @@ function drafting(card, title, ev) {
   clear(card).appendChild(h("h3", null, title));
   card.appendChild(h("p", { class: "sub" }, "Being written by " + ev.model + " on this device from " + plural(ev.excerpts_sent, "excerpt") +
     ". This is a draft: when it is finished I check every point against your notes and remove any I cannot trace."));
-  card.appendChild(h("div", { class: "draft" }, h("p", { class: "loading" }, "Starting…")));
+  card.appendChild(h("div", { class: "draft" }, h("p", { class: "loading", "data-since": String(Date.now()) }, "Starting…")));
 }
+function waiting(card, ev) {
+  const body = card.querySelector(".draft");
+  if (!body || body.querySelector(".headline, ul")) return;
+  const since = (body.querySelector("[data-since]") || {}).dataset;
+  const why = ev.loading ? "Loading the model into memory first. This happens once per session and can take up to a minute on a laptop."
+    : ev.waiting_for_image ? "Waiting for the model to finish reading an image, then it will start on this."
+    : "Reading your notes. The first words usually appear within a few seconds.";
+  clear(body).appendChild(h("p", { class: "loading", "data-since": since ? since.since : String(Date.now()) }, why));
+}
+// A seconds counter on anything still waiting, so a slow laptop does not look frozen.
+setInterval(() => document.querySelectorAll("[data-since]").forEach(el => {
+  let t = el.querySelector(".secs");
+  if (!t) { t = h("span", { class: "secs" }); el.appendChild(t); }
+  t.textContent = " (" + Math.round((Date.now() - Number(el.dataset.since)) / 1000) + "s)";
+}), 1000);
 function draftBody(card) {
   let body = card.querySelector(".draft");
   if (!body) { body = h("div", { class: "draft" }); card.appendChild(body); }
@@ -298,6 +313,7 @@ async function runPrep() {
   streamAI("prep", "/api/prep/ai/stream", { query: q }, ev => {
     if (run !== prepRun) return;
     if (ev.type === "start") return drafting(ai, "In short", ev);
+    if (ev.type === "status") return waiting(ai, ev);
     if (ev.type === "partial") {
       const d = ev.draft, body = draftBody(ai);
       if (d.headline) body.appendChild(h("p", { class: "headline" }, d.headline));
@@ -355,6 +371,7 @@ async function runAsk() {
   streamAI("ask", "/api/ask/ai/stream", { question: q }, ev => {
     if (run !== askRun) return;
     if (ev.type === "start") return drafting(ai, "Answer", ev);
+    if (ev.type === "status") return waiting(ai, ev);
     if (ev.type === "partial") {
       const d = ev.draft, body = draftBody(ai);
       if (d.answer.length) body.appendChild(draftList(d.answer.map(p => p.text)));

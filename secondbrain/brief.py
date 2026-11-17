@@ -344,7 +344,12 @@ def _d(iso):
 
 
 # ---- the local model's written layer ---------------------------------------
-def _excerpts(evidence, limit=14, width=700):
+# How much of your notes goes to the model. Less text means it starts writing sooner;
+# these are enough for a meeting brief because the best matches come first.
+PREP_EXCERPTS, ASK_EXCERPTS, EXCERPT_CHARS = 10, 6, 450
+
+
+def _excerpts(evidence, limit=99, width=EXCERPT_CHARS):
     parts = []
     for e in evidence[:limit]:
         kind = "typed note" if e["kind"] == "text" else "read from %s, may contain misreadings" % (e["image_kind"] or "an image")
@@ -437,11 +442,16 @@ def _final(result):
     return out
 
 
-def _stream(session, model, system, user, schema, purpose, used, draft_of, finish):
+def _stream(session, model, system, user, schema, purpose, used, draft_of, finish, max_tokens):
     yield {"type": "start", "model": model, "excerpts_sent": len(used)}
+    # Tell the page what the wait is for, so a slow start is not a mystery.
+    yield {"type": "status", "loading": not session.model.loaded(model),
+           "waiting_for_image": session.reading_now is not None}
     out = None
+    session.foreground_begin()                  # background image reading waits until this is done
     try:
-        for kind, obj in session.model.stream_json(model, system, user, schema, purpose=purpose):
+        for kind, obj in session.model.stream_json(model, system, user, schema, purpose=purpose,
+                                                   max_tokens=max_tokens):
             if kind == "partial":
                 yield {"type": "partial", "draft": draft_of(obj)}
             else:
@@ -449,6 +459,8 @@ def _stream(session, model, system, user, schema, purpose, used, draft_of, finis
     except llm.ModelError as e:
         yield _final({"available": False, "reason": "The local model could not answer (%s)." % e})
         return
+    finally:
+        session.foreground_end()
     yield _final(finish(out if isinstance(out, dict) else {}))
 
 
@@ -461,9 +473,9 @@ def prep_ai_events(session, query):
     if not model:
         yield _final({"available": False, "reason": reason})
         return
-    used = base["evidence"][:14]
+    used = base["evidence"][:PREP_EXCERPTS]
     user = "Today is %s.\nThe meeting is about: %s\n\nExcerpts from the manager's notes:\n\n%s" % (
-        dates.human(session.today), base["query"], _excerpts(base["evidence"]))
+        dates.human(session.today), base["query"], _excerpts(used))
 
     def draft_of(o):
         return {"headline": o.get("headline") if isinstance(o.get("headline"), str) else "",
@@ -472,16 +484,16 @@ def prep_ai_events(session, query):
                 "gaps": [g for g in (o.get("gaps") or []) if isinstance(g, str) and g.strip()]}
 
     def finish(out):
-        points, d1 = _ground(out.get("talking_points"), used, 5)
-        watch, d2 = _ground(out.get("watch_outs"), used, 3)
+        points, d1 = _ground(out.get("talking_points"), used, 3)
+        watch, d2 = _ground(out.get("watch_outs"), used, 2)
         head, _ = _ground([{"point": out.get("headline"), "sources": [e["n"] for e in used]}], used, 1)
         return {"available": True, "model": model, "headline": head[0]["text"] if head else "",
                 "talking_points": points, "watch_outs": watch,
-                "gaps": [str(g) for g in (out.get("gaps") or [])][:3],
+                "gaps": [str(g) for g in (out.get("gaps") or [])][:2],
                 "dropped": d1 + d2, "excerpts_sent": len(used)}
 
     for event in _stream(session, model, llm.PREP_SYSTEM, user, llm.PREP_SCHEMA,
-                         "write meeting brief: %s" % base["query"][:60], used, draft_of, finish):
+                         "write meeting brief: %s" % base["query"][:60], used, draft_of, finish, 420):
         yield event
 
 
@@ -495,22 +507,22 @@ def ask_ai_events(session, question):
     if not model:
         yield _final({"available": False, "reason": reason})
         return
-    used = base["evidence"][:8]
+    used = base["evidence"][:ASK_EXCERPTS]
     user = "Today is %s.\nQuestion: %s\n\nExcerpts from the manager's notes:\n\n%s" % (
-        dates.human(session.today), base["question"], _excerpts(base["evidence"], limit=8))
+        dates.human(session.today), base["question"], _excerpts(used))
 
     def draft_of(o):
         return {"found": o.get("found") is not False, "answer": _clean_points(o.get("answer")),
                 "caveat": o.get("caveat") if isinstance(o.get("caveat"), str) else ""}
 
     def finish(out):
-        points, dropped = _ground(out.get("answer"), used, 3)
+        points, dropped = _ground(out.get("answer"), used, 2)
         found = bool(out.get("found")) and bool(points)
         return {"available": True, "model": model, "found": found, "answer": points if found else [],
                 "caveat": str(out.get("caveat") or ""), "dropped": dropped, "excerpts_sent": len(used)}
 
     for event in _stream(session, model, llm.ASK_SYSTEM, user, llm.ASK_SCHEMA,
-                         "answer: %s" % base["question"][:60], used, draft_of, finish):
+                         "answer: %s" % base["question"][:60], used, draft_of, finish, 260):
         yield event
 
 

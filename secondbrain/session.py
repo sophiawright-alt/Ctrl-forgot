@@ -66,6 +66,8 @@ class Session:
         self.started = time.time()
         self._last_sync = 0.0
         self._jobs = queue.Queue()
+        self._foreground = 0                  # answers being written right now
+        self.reading_now = None               # the image being read, if any
         self._worker = threading.Thread(target=self._work, daemon=True)
         self._worker.start()
 
@@ -111,6 +113,8 @@ class Session:
             if on:
                 self.allowed.add(unit)
                 self.ledger.record("allow", {"folder": unit})
+                # Get the model into memory now, so the first answer does not wait for it.
+                threading.Thread(target=self.model.warm, daemon=True).start()
             else:
                 self.allowed.discard(unit)
                 gone = [d for d in self.docs.values() if d.unit == unit]
@@ -281,9 +285,14 @@ class Session:
                     pages = [f.read()]
             texts, kinds = [], []
             for n, img in enumerate(pages, 1):
-                out = self.model.chat_json(vision, llm.TRANSCRIBE_SYSTEM,
+                self._yield_to_foreground()
+                self.reading_now = doc_id
+                try:
+                    out = self.model.chat_json(vision, llm.TRANSCRIBE_SYSTEM,
                                            "Transcribe this image.", llm.TRANSCRIBE_SCHEMA, images=[img],
                                            purpose="read image %s%s" % (doc_id, " page %d" % n if len(pages) > 1 else ""))
+                finally:
+                    self.reading_now = None
                 t = str(out.get("text") or "").replace("\\n", "\n").strip()
                 if t and out.get("kind") != "no_text":
                     texts.append(("[page %d]\n" % n if len(pages) > 1 else "") + t)
@@ -311,6 +320,7 @@ class Session:
             self._rebuild()
 
     def _embed(self):
+        self._yield_to_foreground()
         em = self.model.refresh().get("embed")
         if not em:
             return
@@ -330,6 +340,20 @@ class Session:
                 self._jobs.put(("embed", None, None))
 
     # ---- views ----------------------------------------------------------
+    # ---- answers you are waiting for come before background reading ------
+    def foreground_begin(self):
+        with self.lock:
+            self._foreground += 1
+
+    def foreground_end(self):
+        with self.lock:
+            self._foreground = max(0, self._foreground - 1)
+
+    def _yield_to_foreground(self, limit=600):
+        t0 = time.time()
+        while self._foreground and time.time() - t0 < limit:
+            time.sleep(0.2)
+
     def busy(self):
         with self.lock:
             return sum(1 for d in self.docs.values() if d.status in ("queued", "reading"))

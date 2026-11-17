@@ -167,3 +167,4 @@ table.tests .note { color: var(--muted); font-size: 12.5px; display: block; }
 .drafting .draft ul:last-child::after { display: none; }
 @keyframes blink { 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .drafting .draft > :last-child::after, .drafting .draft li:last-child::after { animation: none; } }
+.loading .secs { color: var(--muted); font-variant-numeric: tabular-nums; }

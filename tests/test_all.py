@@ -106,6 +106,69 @@ class Checking(unittest.TestCase):
         self.assertEqual(dropped, 2)
 
 
+class Speed(unittest.TestCase):
+    """Summaries are written while you wait, so they get every advantage."""
+
+    def setUp(self):
+        self.mock = mock_ollama.start(0)
+        self.saved = dict(mock_ollama.MODELS)
+        from secondbrain.ledger import Ledger
+        from secondbrain.llm import LocalModel
+        self.ledger = Ledger()
+        self.model = LocalModel(self.ledger, port=self.mock.server_address[1])
+
+    def tearDown(self):
+        mock_ollama.MODELS.clear()
+        mock_ollama.MODELS.update(self.saved)
+        self.mock.shutdown()
+
+    def test_quickest_sensible_model_writes_summaries(self):
+        mock_ollama.MODELS["qwen3-vl:4b"] = "4.4B"
+        mock_ollama.MODELS["qwen3-vl:2b"] = "2.1B"
+        st = self.model.refresh(force=True)
+        self.assertEqual((st["chat"], st["vision"]), ("qwen3-vl:4b", "qwen3-vl:8b"))
+        os.environ["SECOND_BRAIN_MODEL"] = "qwen3-vl:8b"
+        try:
+            self.assertEqual(self.model.refresh(force=True)["chat"], "qwen3-vl:8b")       # your choice wins
+        finally:
+            del os.environ["SECOND_BRAIN_MODEL"]
+
+    def test_one_model_does_both(self):
+        st = self.model.refresh(force=True)
+        self.assertEqual((st["chat"], st["vision"]), ("qwen3-vl:8b", "qwen3-vl:8b"))
+
+    def test_preloading(self):
+        mock_ollama.LOADED.clear()
+        self.assertFalse(self.model.loaded("qwen3-vl:8b"))
+        self.model.warm()
+        self.assertTrue(self.model.loaded("qwen3-vl:8b"))
+        self.assertIn("No notes were sent", self.ledger.events[-1]["detail"]["message"])
+
+    def test_summaries_go_before_image_reading(self):
+        import shutil
+        import tempfile
+        from secondbrain.session import Session
+        folder = tempfile.mkdtemp()
+        try:
+            os.mkdir(os.path.join(folder, "photos"))
+            shutil.copy(os.path.join(ROOT, "sample_notes", "photos", "2026-11-12 chat with dan.png"),
+                        os.path.join(folder, "photos", "chat.png"))
+            s = Session(folder, self.ledger, self.model)
+            s.foreground_begin()                                  # someone is waiting for an answer
+            s.set_allowed("photos", True)
+            time.sleep(1.0)
+            self.assertEqual(s.docs["photos/chat.png"].status, "reading")   # picked up, but paused
+            self.assertEqual(s.reading_now, None)
+            s.foreground_end()
+            for _ in range(40):
+                if s.docs["photos/chat.png"].status == "ready":
+                    break
+                time.sleep(0.1)
+            self.assertEqual(s.docs["photos/chat.png"].status, "ready")
+        finally:
+            shutil.rmtree(folder)
+
+
 class Streaming(unittest.TestCase):
     def test_partial_json(self):
         from secondbrain.llm import partial_json
@@ -346,7 +409,10 @@ class EndToEnd(unittest.TestCase):
     def test_4b_written_answers_stream(self):
         ev = stream("/api/prep/ai/stream", {"query": "Priya"})
         kinds = [e["type"] for e in ev]
-        self.assertEqual((kinds[0], kinds[-1]), ("start", "final"))
+        self.assertEqual((kinds[0], kinds[1], kinds[-1]), ("start", "status", "final"))
+        model, options, chars = mock_ollama.CHATS[-1]
+        self.assertEqual((options.get("num_ctx"), options.get("num_predict")), (4096, 420))
+        self.assertLess(chars, 7500)                                                         # a short request
         self.assertGreaterEqual(kinds.count("partial"), 2)
         sizes = [len(json.dumps(e["draft"])) for e in ev if e["type"] == "partial"]
         self.assertLess(sizes[0], sizes[-1])                                                # the draft grows

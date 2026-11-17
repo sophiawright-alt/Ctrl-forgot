@@ -40,17 +40,20 @@ At this point search, meeting prep, change detection and the receipt all work wi
 ## Add the local model (for written summaries and handwriting)
 
 1. Install Ollama from https://ollama.com and start it.
-2. Download a model once (this is the only step that needs the internet):
+2. Download a model once (this is the only step that needs the internet). Pick by your laptop:
 
    ```
-   ollama pull qwen3-vl:8b          # about 6 GB. Reads handwriting well. Recommended.
-   ollama pull gemma3:4b            # about 3 GB. Lighter alternative if your laptop struggles.
+   ollama pull qwen3-vl:4b          # about 3.3 GB. Recommended for most laptops: quick summaries, good handwriting.
+   ollama pull qwen3-vl:8b          # about 6 GB. Best handwriting, but summaries are about twice as slow
+                                    # unless you have a graphics card or 16 GB+ of memory.
    ollama pull nomic-embed-text     # optional, small. Adds search by meaning, not just by words.
    ```
 
+   If both qwen3-vl sizes are installed, the app uses the 4b for summaries (you are waiting for those) and the 8b for reading images (that happens in the background). On a laptop with 8 GB of memory, keep just one, because swapping between two is slow.
+
 3. Restart `python3 run.py`. The pill at the top right should say "Model on this device: …".
 
-The app picks a model automatically. To force one: `SECOND_BRAIN_MODEL=gemma3:4b python3 run.py`. Any Ollama model marked as a cloud model is ignored.
+The app picks a model automatically. To choose one yourself, use the `model` and `vision_model` lines in settings.txt. Any Ollama model marked as a cloud model is ignored.
 
 ## What it can read
 
