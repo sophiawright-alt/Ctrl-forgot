@@ -274,7 +274,8 @@ def ask(session, question):
         for h in hits[:3]:
             union |= h["matched"]
         cov, missing = idx.coverage(question, union)
-        top_sim = max([h["sim"] or 0 for h in hits] or [0])
+        # for a short question, "similar in meaning" alone is not evidence (as in meeting prep)
+        top_sim = max([h["sim"] or 0 for h in hits] or [0]) if len(q) >= 3 else 0
         best_single = max([h["coverage"] for h in hits] or [0])
         if cov >= 0.75 and best_single >= 0.5:
             verdict = "found"
@@ -286,7 +287,7 @@ def ask(session, question):
         missing = _as_typed(question, missing)
         result["missing"] = missing
 
-        keep = [h for h in hits if h["coverage"] >= 0.34 or (h["sim"] or 0) >= 0.5][:6]
+        keep = [h for h in hits if h["coverage"] >= 0.34 or ((h["sim"] or 0) >= 0.5 and len(q) >= 3)][:6]
         asked = set(q)
 
         def said(line):                              # which of the asked-about words a line covers
@@ -705,7 +706,8 @@ def prep_ai_events(session, query):
                 "gaps": [str(g) for g in (out.get("gaps") or [])][:2],
                 "dropped": d1 + d2, "excerpts_sent": len(used)}
 
-    for event in _stream(session, model, llm.PREP_SYSTEM, user, llm.PREP_SCHEMA,
+    system = llm.PREP_SYSTEM_SHORT if llm.small(session.model._sizes, model) else llm.PREP_SYSTEM
+    for event in _stream(session, model, system, user, llm.PREP_SCHEMA,
                          "write meeting brief: %s" % base["query"][:60], used, draft_of, finish, 2600):
         yield event
 
@@ -727,8 +729,12 @@ def ask_ai_events(session, question):
         yield _final({"available": False, "reason": reason})
         return
     used = base["evidence"][:ASK_EXCERPTS]
+    asked = base["question"]
+    # A bare name or topic ("reinart", "Helix budget") is not a question; small models need it to be one.
+    if "?" not in asked and len(asked.split()) <= 3:
+        asked = "What do the notes say about %s?" % asked
     user = "Today is %s.\nQuestion: %s\n\nExcerpts from the manager's notes:\n\n%s" % (
-        dates.human(session.today), base["question"], _excerpts(used, base["terms"]))
+        dates.human(session.today), asked, _excerpts(used, base["terms"]))
 
     def draft_of(o):
         return {"found": o.get("found") is not False, "answer": _clean_points(o.get("answer")),
@@ -740,11 +746,15 @@ def ask_ai_events(session, question):
         # The notes decide, not the model's yes/no: points that check out against notes
         # that clearly match the question are an answer, even if the model was unsure.
         found = bool(points) and (said_yes or base["verdict"] == "found")
+        caveat = str(out.get("caveat") or "")
+        if not found and base["verdict"] == "found":
+            caveat = ""                          # "not in the notes" is wrong when the notes plainly match
         return {"available": True, "model": model, "found": found, "answer": points,
                 "notes_match": base["verdict"] == "found",
-                "caveat": str(out.get("caveat") or ""), "dropped": dropped, "excerpts_sent": len(used)}
+                "caveat": caveat, "dropped": dropped, "excerpts_sent": len(used)}
 
-    for event in _stream(session, model, llm.ASK_SYSTEM, user, llm.ASK_SCHEMA,
+    system = llm.ASK_SYSTEM_SHORT if llm.small(session.model._sizes, model) else llm.ASK_SYSTEM
+    for event in _stream(session, model, system, user, llm.ASK_SCHEMA,
                          "answer: %s" % base["question"][:60], used, draft_of, finish, 1400):
         yield event
 

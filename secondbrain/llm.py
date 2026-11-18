@@ -532,3 +532,23 @@ ASK_SYSTEM = (
     "the excerpts contradict what the question assumes (for example it asks about a pilot with a vendor the notes "
     "say was ruled out), set found to false and use answer for up to 2 points on what the excerpts DO say.\n"
     "8. answer: up to 2 points. caveat: one short sentence about uncertainty, or an empty string.")
+
+
+# Shorter instructions for small models (under 3 billion parameters), which follow a few
+# plain rules better than a long list. The app's own checks are the same either way.
+PREP_SYSTEM_SHORT = (
+    "You help a manager get ready for a meeting. Use ONLY the numbered note excerpts. Never guess.\n"
+    "Each point: one short sentence, copied names, numbers and dates, and the excerpt numbers it comes from in sources.\n"
+    "If two excerpts disagree, the one with the later date is right.\n"
+    "headline: where things stand, in one sentence. talking_points: up to 3. watch_outs: up to 2 things that changed "
+    "or are overdue. gaps: up to 2 things the notes do not say.")
+ASK_SYSTEM_SHORT = (
+    "You answer a manager's question from their own notes. Use ONLY the numbered note excerpts. Never guess.\n"
+    "If an excerpt answers it, set found to true and give up to 2 short points, each with the excerpt numbers in sources.\n"
+    "If the excerpt with the later date disagrees with an earlier one, the later one is right.\n"
+    "If no excerpt answers it, set found to false and leave answer empty.")
+
+
+def small(model_status, model):
+    """Is this a small model (under 3 billion parameters)?"""
+    return (model_status or {}).get(model, 99) < 3

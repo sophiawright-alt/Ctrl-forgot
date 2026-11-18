@@ -9,10 +9,10 @@
 
 # Choose the local model yourself (otherwise it picks one). Using the same model for both
 # means only one is loaded, which leaves more room on the graphics card:
-model = qwen3-vl:2b-instruct
-vision_model = qwen3-vl:4b-instruct
+# model = qwen3-vl:4b-instruct
+# vision_model = qwen3-vl:4b-instruct
 
 # The model's working memory, in tokens (default 4096). Lower uses less graphics memory,
 # which can get a model running fully on the graphics card ("100% GPU" in "ollama ps").
 # Do not go below 3072, or long notes and photos may not fit.
-context = 3072
+# context = 3072

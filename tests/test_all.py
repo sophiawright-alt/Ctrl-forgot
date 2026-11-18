@@ -171,6 +171,13 @@ class Speed(unittest.TestCase):
         self.assertEqual(got[-1][0], "done")
         self.assertEqual(got[-1][1]["headline"], "Priya wants to lead the Helix pilot.")
 
+    def test_small_models_get_short_instructions(self):
+        from secondbrain import llm
+        self.model._sizes = {"qwen3-vl:2b-instruct": 2.1, "qwen3-vl:4b-instruct": 4.4}
+        self.assertTrue(llm.small(self.model._sizes, "qwen3-vl:2b-instruct"))
+        self.assertFalse(llm.small(self.model._sizes, "qwen3-vl:4b-instruct"))
+        self.assertLess(len(llm.ASK_SYSTEM_SHORT), len(llm.ASK_SYSTEM))
+
     def test_one_model_does_both(self):
         st = self.model.refresh(force=True)
         self.assertEqual((st["chat"], st["vision"]), ("qwen3-vl:8b", "qwen3-vl:8b"))
@@ -544,6 +551,16 @@ class EndToEnd(unittest.TestCase):
         self.assertTrue(ai["found"])
         self.assertEqual(len(ai["answer"]), 2)
         self.assertTrue(all(p["sources"] for p in ai["answer"]))   # the app found the notes behind each point
+
+    def test_5f_a_bare_name_becomes_a_question(self):
+        call("/api/ask/ai", {"question": "Rina"})
+        self.assertIn("Question: What do the notes say about Rina?", mock_ollama.PROMPTS[-1][-1]["content"])
+        mock_ollama.MODE["ask"] = "refuse"                   # the model says "not in the notes"
+        try:
+            _, ai = call("/api/ask/ai", {"question": "When does the Helix pilot start?"})
+        finally:
+            mock_ollama.MODE["ask"] = "normal"
+        self.assertEqual((ai["found"], ai["notes_match"], ai["caveat"]), (False, True, ""))
 
     def test_5d_questions_about_a_named_thing(self):
         _, a = call("/api/ask", {"question": "When does the Corvid pilot start?"})        # no Corvid pilot

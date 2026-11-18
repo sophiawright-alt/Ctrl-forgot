@@ -15,6 +15,7 @@ STOPPED = []
 THINKERS = set()
 MODE = {'think': 'none'}   # none | think (reasons first) | empty (silent when think=false)
 LOADED = set()
+PROMPTS = []
 WARMS = []
 CHATS = []
 MODELS = {"qwen3-vl:8b": "8.8B", "nomic-embed-text:latest": "137M"}
@@ -69,6 +70,7 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/api/chat":
             LOADED.add(body.get("model"))
             CHATS.append((body.get("model"), body.get("options", {}), sum(len(m["content"]) for m in body["messages"])))
+            PROMPTS.append(body["messages"])
             msg = body["messages"][-1]
             if msg.get("images"):
                 size = len(msg["images"][0])
