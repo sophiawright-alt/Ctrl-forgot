@@ -36,6 +36,8 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/api/tags":
             return self._send({"models": [{"name": n, "details": {"parameter_size": MODELS[n]}} for n in MODELS] +
                                          [{"name": "gpt-oss:120b-cloud", "remote_host": "https://ollama.com"}]})
+        if self.path == "/api/ping":                     # pretends to be an older Second Brain
+            return self._send({"app": "second-brain", "version": "0.1.0"})
         if self.path == "/api/ps":
             return self._send({"models": [{"name": n} for n in sorted(LOADED)]})
         self._send({}, 404)
@@ -69,6 +71,14 @@ class H(BaseHTTPRequestHandler):
             if msg.get("images"):
                 size = len(msg["images"][0])
                 out = TRANSCRIPTS["notebook"] if size > 100000 else TRANSCRIPTS["chat"]
+            elif "Question:" in msg["content"] and MODE.get("ask") == "unsure":   # small-model habits
+                out = {"found": False, "caveat": "", "answer": [
+                    {"point": "The Helix pilot start moved to 1 Dec, with 2 teams not 4.", "sources": ["1", "[2]"]}]}
+            elif "Question:" in msg["content"] and MODE.get("ask") == "refuse":   # says no, gives nothing
+                out = {"found": False, "caveat": "", "answer": []}
+            elif "Question:" in msg["content"] and MODE.get("ask") == "sloppy":   # wrong labels, no sources
+                out = {"found": "true", "caveat": "", "answer": [{"text": "The Helix pilot start moved to 1 Dec."},
+                                                                 "The Helix pilot now has 2 teams not 4."]}
             elif "Question:" in msg["content"]:
                 out = {"found": True, "caveat": "", "answer": [
                     {"point": "The Helix budget was cut to £28k for year one on 3 Nov, down from £40k agreed on 6 Oct.", "sources": [1, 2]},
@@ -113,6 +123,7 @@ def start(port=0):
 
 
 if __name__ == "__main__":
+    MODE["ask"] = __import__("os").environ.get("MOCK_ASK", "normal")
     s = start(int(sys.argv[1]) if len(sys.argv) > 1 else 11434)
     print("mock ollama on", s.server_address[1], flush=True)
     threading.Event().wait()

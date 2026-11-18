@@ -541,9 +541,10 @@ def _ground(points, evidence, limit):
         return " ".join("%s %s %s %s" % (e["text"], e["date_label"], e["title"], e["date"]) for e in items).replace(",", "")
     everything = flat(evidence)
     kept, dropped = [], 0
-    for p in points or []:
-        text = str(p.get("point") or "").strip()
-        sources = [n for n in dict.fromkeys(p.get("sources") or []) if isinstance(n, int) and n in by_n]
+    for p in _as_points(points):
+        text, sources = p["text"], [n for n in dict.fromkeys(p["sources"]) if n in by_n]
+        if text and not sources:
+            sources = _find_sources(text, evidence)   # the model forgot to say: look for itself
         if not text or not sources:
             dropped += 1                           # no source, no say
             continue
@@ -565,6 +566,53 @@ def _ground(points, evidence, limit):
         if len(kept) >= limit:
             break
     return kept, dropped
+
+
+def _as_points(items):
+    """The model's points, whatever shape a small model wrote them in."""
+    if isinstance(items, (str, dict)):
+        items = [items]
+    out = []
+    for p in items if isinstance(items, list) else []:
+        if isinstance(p, str):
+            out.append({"text": p.strip(), "sources": []})
+        elif isinstance(p, dict):
+            text = next((p[k] for k in ("point", "text", "answer", "summary", "content") if isinstance(p.get(k), str)), "")
+            src = next((p[k] for k in ("sources", "source", "citations", "refs", "excerpts") if k in p), None)
+            out.append({"text": text.strip(), "sources": _numbers(src)})
+    return out
+
+
+def _find_sources(text, evidence):
+    """Which excerpts a point came from, when the model did not say: the one or two that
+    contain most of its words (and all of its numbers)."""
+    want = extract.content_stems(text)
+    numbers = [n.replace(",", "").rstrip(".") for n in _NUM.findall(text)]
+    scored = []
+    for e in evidence:
+        body = "%s %s %s" % (e["text"], e["date_label"], e["date"])
+        have = set(stems(body, keep_stop=True))
+        support = len(want & have) / max(1, len(want))
+        if support >= 0.6 and all(n in body.replace(",", "") for n in numbers):
+            scored.append((support, e["n"]))
+    scored.sort(reverse=True)
+    return [n for _, n in scored[:2]]
+
+
+def _numbers(v):
+    """Source numbers however a small model writes them: 2, "2", "[2]", "2, 3", [2, "3"], 2.0."""
+    if isinstance(v, bool) or v is None:
+        return []
+    if isinstance(v, (int, float)):
+        return [int(v)]
+    if isinstance(v, str):
+        return [int(x) for x in re.findall(r"\d+", v)]
+    if isinstance(v, (list, tuple)):
+        out = []
+        for x in v:
+            out.extend(_numbers(x))
+        return out
+    return []
 
 
 def _unique_changes(changes):
@@ -596,12 +644,7 @@ def _model_or_reason(session):
 # prep_ai / ask_ai give just the final event, for anything that does not stream.
 
 def _clean_points(items):
-    out = []
-    for p in items if isinstance(items, list) else []:
-        if isinstance(p, dict) and isinstance(p.get("point"), str) and p["point"].strip():
-            out.append({"text": p["point"],
-                        "sources": [x for x in (p.get("sources") or []) if isinstance(x, int)]})
-    return out
+    return [p for p in _as_points(items) if p["text"]]
 
 
 def _final(result):
@@ -693,8 +736,12 @@ def ask_ai_events(session, question):
 
     def finish(out):
         points, dropped = _ground(out.get("answer"), used, 2)
-        found = bool(out.get("found")) and bool(points)
+        said_yes = out.get("found") not in (False, "false", "no", 0)
+        # The notes decide, not the model's yes/no: points that check out against notes
+        # that clearly match the question are an answer, even if the model was unsure.
+        found = bool(points) and (said_yes or base["verdict"] == "found")
         return {"available": True, "model": model, "found": found, "answer": points,
+                "notes_match": base["verdict"] == "found",
                 "caveat": str(out.get("caveat") or ""), "dropped": dropped, "excerpts_sent": len(used)}
 
     for event in _stream(session, model, llm.ASK_SYSTEM, user, llm.ASK_SCHEMA,

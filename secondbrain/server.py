@@ -8,7 +8,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from . import brief, guard
+from . import __version__, brief, guard
 
 WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
@@ -98,6 +98,7 @@ def make_handler(session, ledger):
             s["model"] = session.model.refresh()
             s["receipt"] = ledger.snapshot(session.root)
             s["locked"] = guard.is_armed()
+            s["version"] = __version__
             return s
 
         # -- routes --
@@ -111,7 +112,7 @@ def make_handler(session, ledger):
                 with open(os.path.join(WEB, name), "rb") as f:
                     return self._send(200, f.read(), ctype)
             if url.path == "/api/ping":                  # lets a second double-click find this window
-                return self._send(200, {"app": "second-brain"})
+                return self._send(200, {"app": "second-brain", "version": __version__})
             if url.path == "/api/state":
                 session.sync()
                 return self._send(200, self._state())

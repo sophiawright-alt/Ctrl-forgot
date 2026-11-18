@@ -168,3 +168,9 @@ table.tests .note { color: var(--muted); font-size: 12.5px; display: block; }
 @keyframes blink { 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .drafting .draft > :last-child::after, .drafting .draft li:last-child::after { animation: none; } }
 .loading .secs { color: var(--muted); font-variant-numeric: tabular-nums; }
+.stale { background: #fdecea; border-bottom: 1px solid #f3c3bd; color: #6b1d16; padding: 12px 32px; font-size: 14px; }
+.stale b { display: block; color: var(--red); }
+.events details.reply { margin-top: 3px; }
+.events details.reply summary { cursor: pointer; color: var(--blue); }
+.events details.reply pre { white-space: pre-wrap; word-break: break-word; font: 11.5px/1.4 var(--mono); background: var(--bg);
+  padding: 6px 8px; border-radius: 4px; margin: 4px 0 0; color: var(--text); }

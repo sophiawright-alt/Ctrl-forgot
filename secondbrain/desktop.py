@@ -47,14 +47,19 @@ def read_settings(path):
 
 
 def already_running(port):
-    """If Second Brain is already running on this port, return its address."""
+    """If this same version of Second Brain is already running on this port, return its address.
+
+    An older copy still running (say, started from a terminal before an update) is not
+    reused: the new copy starts on the next free port instead, so you get the new version.
+    """
+    from . import __version__
     try:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1.5)
         conn.request("GET", "/api/ping")
         resp = conn.getresponse()
         data = json.loads(resp.read() or b"{}")
         conn.close()
-        if data.get("app") == "second-brain":
+        if data.get("app") == "second-brain" and data.get("version") == __version__:
             return "http://127.0.0.1:%d" % port
     except (OSError, ValueError, http.client.HTTPException):
         pass

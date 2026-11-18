@@ -299,7 +299,8 @@ class LocalModel:
             if conn is not None:
                 conn.close()
             detail = {"purpose": purpose, "model": model, "sent_chars": sent, "images": 0,
-                      "received_chars": len(content), "seconds": round(time.time() - t0, 1)}
+                      "received_chars": len(content), "seconds": round(time.time() - t0, 1),
+                      "reply": content[:400]}
             if thought:
                 detail["thinking_chars"] = thought
             if failed is not None:
@@ -508,6 +509,7 @@ ASK_SYSTEM = (
     "You answer a manager's question using excerpts from their own scattered notes.\n" + RULES +
     "6. If the excerpts do not answer the question, set found to false, leave answer empty, and say in caveat what "
     "is missing. A related excerpt that does not actually answer the question does not count.\n"
-    "7. If the question assumes something the excerpts do not support (for example a pilot with a vendor the notes "
-    "say was ruled out), set found to false and use answer for up to 2 points on what the excerpts DO say about it.\n"
+    "7. If an excerpt answers the question, set found to true and answer it, even if the wording differs. Only if "
+    "the excerpts contradict what the question assumes (for example it asks about a pilot with a vendor the notes "
+    "say was ruled out), set found to false and use answer for up to 2 points on what the excerpts DO say.\n"
     "8. answer: up to 2 points. caveat: one short sentence about uncertainty, or an empty string.")

@@ -276,6 +276,14 @@ def scan_pdf(jpeg, w=1000, h=1200):
                          b"/BitsPerComponent 8 /Filter /DCTDecode" % (w, h), jpeg)])
 
 
+class Versions(unittest.TestCase):
+    def test_page_and_app_agree(self):
+        import re as _re
+        from secondbrain import __version__
+        with open(os.path.join(ROOT, "web", "app.js"), encoding="utf-8") as f:
+            self.assertEqual(_re.search(r'APP_VERSION = "([^"]+)"', f.read()).group(1), __version__)
+
+
 class PDF(unittest.TestCase):
     def test_text(self):
         from secondbrain import pdftext
@@ -346,6 +354,14 @@ class Desktop(unittest.TestCase):
         status = c.getresponse().status
         c.close()
         return status
+
+    def test_older_copy_is_not_reused(self):
+        from secondbrain import desktop
+        mock = mock_ollama.start(0)                          # something answering /api/ping without our version
+        try:
+            self.assertIsNone(desktop.already_running(mock.server_address[1]))
+        finally:
+            mock.shutdown()
 
     def test_window_lifecycle(self):
         port = 8811
@@ -498,6 +514,27 @@ class EndToEnd(unittest.TestCase):
         _, b = call("/api/prep", {"query": "Mei"})
         self.assertTrue(any("budget letter" in x["text"] and x["resolved_by"]["doc"].endswith(".pdf")
                             for x in b["probably_done"]))
+
+    def test_5e_small_model_habits_do_not_lose_the_answer(self):
+        mock_ollama.MODE["ask"] = "unsure"                   # says found: false, writes sources as text
+        try:
+            _, ai = call("/api/ask/ai", {"question": "When does the Helix pilot start?"})
+        finally:
+            mock_ollama.MODE["ask"] = "normal"
+        self.assertTrue(ai["found"])
+        self.assertEqual(ai["dropped"], 0)
+        self.assertIn("1 Dec", ai["answer"][0]["text"])
+        _, st = call("/api/state")
+        reply = [e for e in st["receipt"]["events"] if e["kind"] == "model"][-1]["detail"]["reply"]
+        self.assertIn('"found"', reply)                      # what the model said is visible in the receipt
+        mock_ollama.MODE["ask"] = "sloppy"                   # other labels, plain sentences, no source numbers
+        try:
+            _, ai = call("/api/ask/ai", {"question": "When does the Helix pilot start?"})
+        finally:
+            mock_ollama.MODE["ask"] = "normal"
+        self.assertTrue(ai["found"])
+        self.assertEqual(len(ai["answer"]), 2)
+        self.assertTrue(all(p["sources"] for p in ai["answer"]))   # the app found the notes behind each point
 
     def test_5d_questions_about_a_named_thing(self):
         _, a = call("/api/ask", {"question": "When does the Corvid pilot start?"})        # no Corvid pilot

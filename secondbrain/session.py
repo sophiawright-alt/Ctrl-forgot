@@ -289,7 +289,7 @@ class Session:
                 self.reading_now = doc_id
                 try:
                     out = self.model.chat_json(vision, llm.TRANSCRIBE_SYSTEM,
-                                           "Transcribe this image.", llm.TRANSCRIBE_SCHEMA, images=[img],
+                                           "Transcribe this image.", llm.TRANSCRIBE_SCHEMA, images=[img], timeout=900,
                                            purpose="read image %s%s" % (doc_id, " page %d" % n if len(pages) > 1 else ""))
                 finally:
                     self.reading_now = None
@@ -303,7 +303,14 @@ class Session:
         except Exception as e:
             with self.lock:
                 if self.docs.get(doc_id) is doc:
-                    doc.status, doc.note = "failed", str(e)[:200]
+                    doc.tries = getattr(doc, "tries", 0) + 1
+                    if "timed out" in str(e) and doc.tries < 2:
+                        doc.status, doc.note = "queued", "taking a long time; trying once more"
+                        self._jobs.put(("transcribe", doc_id, sha))      # back of the queue
+                    else:
+                        doc.status, doc.note = "failed", str(e)[:200] + (
+                            ". Large phone photos are slow to read: try saving a smaller copy "
+                            "(about 1500 pixels wide)" if "timed out" in str(e) else "")
             return
         with self.lock:
             if self.docs.get(doc_id) is not doc:

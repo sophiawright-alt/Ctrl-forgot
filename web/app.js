@@ -34,6 +34,8 @@ async function api(path, body) {
 }
 const plural = (n, one, many) => n + " " + (n === 1 ? one : (many || one + "s"));
 
+// Must match __version__ in secondbrain/__init__.py.
+const APP_VERSION = "0.4.1";
 let STATE = null;
 let EVIDENCE = [];          // excerpts behind whatever is on screen
 let lastFolders = "", lastChips = "";
@@ -89,7 +91,8 @@ function describe(e) {
     case "revoke": return ["You switched off ", h("b", null, d.folder || d.note), ". Forgot " + plural(d.notes_forgotten || 0, "note") + "."];
     case "model": return [h("span", { class: "model" }, "Local model"), ": " + (d.purpose || "request") +
       ". " + (d.sent_chars || 0).toLocaleString() + " characters" + (d.images ? " and " + plural(d.images, "image") : "") +
-      " passed to " + d.model + " on this device" + (d.error ? " (failed: " + d.error + ")" : "") + "."];
+      " passed to " + d.model + " on this device" + (d.error ? " (failed: " + d.error + ")" : "") + ".",
+      d.reply ? h("details", { class: "reply" }, h("summary", null, "What it replied"), h("pre", null, d.reply)) : null];
     case "blocked": return [h("span", { class: "blocked" }, "Blocked"), ": tried to " + d.what + "."];
     case "selftest": return ["You tested the lock: " + d.blocked + " of " + d.attempts + " attempts blocked."];
     default: return [d.message || e.kind];
@@ -147,6 +150,9 @@ function renderChips(s) {
 }
 function apply(s) {
   STATE = s;
+  // The page is fresh from disk, but the app behind it may be an older copy still running.
+  const stale = s.version !== APP_VERSION;
+  $("stale").hidden = !stale;
   renderFolders(s); renderReceipt(s); renderPills(s); renderChips(s);
   ["prep-out", "ask-out"].forEach(id => {
     const out = $(id);
@@ -388,6 +394,11 @@ async function runAsk() {
     if (!s.available) { ai.className = "card"; ai.appendChild(h("p", { class: "sub" }, s.reason)); return; }
     ai.appendChild(h("p", { class: "sub" }, "Written by " + s.model + " on this device, then checked against your notes."));
     if (s.found) ai.appendChild(points(s.answer));
+    else if (s.notes_match) {
+      // the notes clearly match; the model just could not turn them into a checked answer
+      ai.appendChild(h("p", { class: "sub" }, "The model did not write an answer I could check against your notes. " +
+        "The lines below are what your notes say: click a number to read the note."));
+    }
     else {
       ai.appendChild(h("p", { class: "headline" }, "Your notes do not answer this as asked."));
       if (s.answer.length) add(ai, [h("h4", null, "What they do say"), points(s.answer)]);
