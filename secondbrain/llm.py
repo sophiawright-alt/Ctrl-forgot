@@ -146,7 +146,7 @@ class LocalModel:
             message["images"] = [base64.b64encode(b).decode("ascii") for b in images]
         body = {"model": model, "stream": False, "format": schema, "keep_alive": "30m",
                 "messages": [{"role": "system", "content": system}, message],
-                "options": {"temperature": 0.1, "num_ctx": 8192}}
+                "options": {"temperature": 0.1, "num_ctx": self.context_for(model)}}
         if model not in self._no_think:
             body["think"] = False                # answer directly; skip "thinking" where supported
         sent = len(system) + len(user)
@@ -179,6 +179,24 @@ class LocalModel:
                                      "seconds": round(time.time() - t0, 1)})
         return _parse_answer(content)
 
+    def context_for(self, model):
+        """How much working memory (tokens) to ask Ollama for.
+
+        Every request to a model must ask for the same amount, or Ollama reloads the model,
+        and less working memory leaves more of the graphics card for the model itself.
+        4096 tokens comfortably holds a brief's notes and answer. "Thinking" models
+        reason at length first, so they get 8192.
+        """
+        env = os.environ.get("SECOND_BRAIN_CONTEXT")
+        if env and env.isdigit():
+            return int(env)
+        low = model.lower()
+        if "instruct" in low:
+            return 4096
+        if "thinking" in low or model in self._no_think or "thinking" in self._capabilities(model):
+            return 8192
+        return 4096
+
     def loaded(self, model):
         """Is this model already in memory (so the answer can start straight away)?"""
         try:
@@ -196,7 +214,8 @@ class LocalModel:
             return
         self._warmed[name] = time.time()
         try:
-            self._request("POST", "/api/generate", {"model": name, "keep_alive": "30m"}, timeout=300)
+            self._request("POST", "/api/generate", {"model": name, "keep_alive": "30m",
+                                                    "options": {"num_ctx": self.context_for(name)}}, timeout=300)
             self.ledger.record("note", {"message": "Loaded %s into memory on this device, ready for "
                                                    "questions. No notes were sent." % name})
         except ModelError:
@@ -224,7 +243,7 @@ class LocalModel:
             for attempt in (1, 2):
                 body = {"model": model, "stream": True, "format": schema, "keep_alive": "30m",
                         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                        "options": {"temperature": 0.1, "num_ctx": 8192}}
+                        "options": {"temperature": 0.1, "num_ctx": self.context_for(model)}}
                 if model not in self._no_think:
                     body["think"] = False
                 conn = http.client.HTTPConnection(HOST, self.port, timeout=timeout)

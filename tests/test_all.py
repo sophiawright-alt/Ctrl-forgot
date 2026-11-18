@@ -175,6 +175,15 @@ class Speed(unittest.TestCase):
         st = self.model.refresh(force=True)
         self.assertEqual((st["chat"], st["vision"]), ("qwen3-vl:8b", "qwen3-vl:8b"))
 
+    def test_same_working_memory_everywhere(self):
+        self.model.refresh(force=True)
+        self.assertEqual(self.model.context_for("qwen3-vl:4b-instruct"), 4096)
+        self.assertEqual(self.model.context_for("qwen3-vl:4b-thinking"), 8192)
+        mock_ollama.WARMS.clear()
+        self.model._warmed.clear()
+        self.model.warm()
+        self.assertEqual(mock_ollama.WARMS[-1], 4096)          # preloading asks for the same as answering
+
     def test_preloading(self):
         mock_ollama.LOADED.clear()
         self.assertFalse(self.model.loaded("qwen3-vl:8b"))
@@ -465,7 +474,7 @@ class EndToEnd(unittest.TestCase):
         kinds = [e["type"] for e in ev]
         self.assertEqual((kinds[0], kinds[1], kinds[-1]), ("start", "status", "final"))
         model, options, chars = mock_ollama.CHATS[-1]
-        self.assertEqual((options.get("num_ctx"), options.get("num_predict")), (8192, None))  # no cap that thinking could eat
+        self.assertEqual((options.get("num_ctx"), options.get("num_predict")), (4096, None))  # no cap that thinking could eat
         self.assertLess(chars, 7500)                                                         # a short request
         self.assertGreaterEqual(kinds.count("partial"), 2)
         sizes = [len(json.dumps(e["draft"])) for e in ev if e["type"] == "partial"]

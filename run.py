@@ -43,7 +43,8 @@ def main():
     ap.add_argument("--today", default=settings.get("today"), help="pretend today is YYYY-MM-DD (for rehearsing a demo)")
     ap.add_argument("--app", action="store_true", help="open in its own window, and quit when it is closed")
     args = ap.parse_args()
-    for key, env in (("model", "SECOND_BRAIN_MODEL"), ("vision_model", "SECOND_BRAIN_VISION_MODEL")):
+    for key, env in (("model", "SECOND_BRAIN_MODEL"), ("vision_model", "SECOND_BRAIN_VISION_MODEL"),
+                     ("context", "SECOND_BRAIN_CONTEXT")):
         if settings.get(key) and not os.environ.get(env):
             os.environ[env] = settings[key]
 

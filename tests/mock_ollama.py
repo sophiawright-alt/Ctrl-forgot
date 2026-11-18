@@ -15,6 +15,7 @@ STOPPED = []
 THINKERS = set()
 MODE = {'think': 'none'}   # none | think (reasons first) | empty (silent when think=false)
 LOADED = set()
+WARMS = []
 CHATS = []
 MODELS = {"qwen3-vl:8b": "8.8B", "nomic-embed-text:latest": "137M"}
 
@@ -59,6 +60,7 @@ class H(BaseHTTPRequestHandler):
                 vecs.append(v)
             return self._send({"embeddings": vecs})
         if self.path == "/api/generate":
+            WARMS.append((body.get("options") or {}).get("num_ctx"))
             if body.get("keep_alive") == 0:
                 LOADED.discard(body.get("model"))
             else:

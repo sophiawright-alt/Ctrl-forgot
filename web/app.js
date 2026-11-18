@@ -35,7 +35,7 @@ async function api(path, body) {
 const plural = (n, one, many) => n + " " + (n === 1 ? one : (many || one + "s"));
 
 // Must match __version__ in secondbrain/__init__.py.
-const APP_VERSION = "0.4.1";
+const APP_VERSION = "0.4.2";
 let STATE = null;
 let EVIDENCE = [];          // excerpts behind whatever is on screen
 let lastFolders = "", lastChips = "";
