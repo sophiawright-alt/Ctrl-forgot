@@ -177,8 +177,11 @@ def prep(session, query):
                     # a later note, or a tick: the same day's "get it signed" is a plan, not a report
                     if (rc.id, roff) != (c.id, off) and (rc.date > c.date or (ticked and rc.date == c.date)) and extract.resolves(
                             info["text"], rline + " " + rc.doc.title + " " + (rc.heading or ""), info.get("owner")):
-                        if later is None or rc.date > later[0].date:
-                            later = (rc, roff, rline)
+                        # the closest match wins; the newest only breaks a tie
+                        fit = len(extract.content_stems(info["text"]) & extract.content_stems(
+                            rline + " " + rc.doc.title + " " + (rc.heading or "")))
+                        if later is None or (fit, rc.date) > (later[3], later[0].date):
+                            later = (rc, roff, rline, fit)
                 if not later and (c.id, off) in moved:
                     it["resolved_by"] = superseded[(c.id, off)]      # a newer note overtakes this one
                     result["probably_done"].append(it)
@@ -320,14 +323,24 @@ def ask(session, question):
                 return score
 
             name_lines = []
-            in_doc = {}
+            in_doc, main_subject = {}, {}
             for c in idx.chunks:
                 if c.doc.id not in in_doc:            # does this note mention it anywhere?
-                    in_doc[c.doc.id] = set(stems(c.doc.title + "\n" + "\n".join(c.doc.lines)))
+                    words = stems(c.doc.title + "\n" + "\n".join(c.doc.lines))
+                    in_doc[c.doc.id] = set(words)
+                    # Is it what the note is mainly about? A note that names Quillon once in
+                    # passing, but Halden three times, is about Halden.
+                    counts = {}
+                    for w in words:
+                        if w in names or w in others_named:
+                            counts[w] = counts.get(w, 0) + 1
+                    top = max([v for k, v in counts.items() if k not in names] or [0])
+                    main_subject[c.doc.id] = all(counts.get(n, 0) >= top for n in names)
                 if not all(n in in_doc[c.doc.id] for n in names):
                     continue
                 around = set(stems(c.doc.title + " " + (c.heading or "")))
                 whole_note = all(n in around for n in names) and not (around & others_named)
+                line_stems = [set(stems(l)) for l in c.lines]
                 for off, line in enumerate(c.lines):
                     if not line.strip() or line.lstrip().startswith("#"):
                         continue
@@ -337,8 +350,10 @@ def ask(session, question):
                         bonus = 0.3                        # names it outright
                     elif got & others_named:
                         continue                           # "Helix pilot start…" is not about Corvid
-                    elif whole_note or full:
-                        bonus = 0.0                        # in a note about it
+                    elif whole_note or (full and (main_subject[c.doc.id] or all(
+                            any(n in line_stems[j] for j in range(max(0, off - 1), min(len(c.lines), off + 2)))
+                            for n in names))):
+                        bonus = 0.0                        # in a note (or a passage) about it
                     else:
                         continue
                     name_lines.append((weigh(got), bonus, full, c.date, c, off, line))

@@ -1,0 +1,11 @@
+team weekly 20/10/2026
+
+export bug - Tom says fixed, shipped friday. regional leads havent confirmed tho
+helix - contract with procurement, they want a security questionnaire filled in. who?? not sure thats us or IT
+tom: SSO not available till Q2. workaround = shared logins for pilot (dont love this)
+priya stretched, covering Jo's reports while Jo is off
+
+TODO: fill in security questionnaire or find out who does
+TODO: tell regional leads export is fixed + ask them to confirm
+Priya to draft pilot success measures by 30 Oct
+need to tell Tom about the Q2 SSO date before he promises anything to Helix

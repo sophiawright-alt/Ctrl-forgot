@@ -54,7 +54,10 @@ def main():
             desktop.open_window(running)
             return
 
-    notes = os.path.abspath(os.path.expanduser(args.notes))
+    notes = os.path.expanduser(args.notes)
+    if not os.path.isabs(notes) and not os.path.isdir(notes):
+        notes = os.path.join(HERE, notes)            # "notes = demo_notes" means the folder next to run.py
+    notes = os.path.abspath(notes)
     if not os.path.isdir(notes):
         message = "Notes folder not found:\n%s\n\nCheck the 'notes' line in settings.txt." % notes
         if args.app:

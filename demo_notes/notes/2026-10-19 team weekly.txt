@@ -1,0 +1,10 @@
+team weekly 19/10/2026
+
+eval - hallucination rate 3.1% on the CSR test set, target is under 2%. Aisha thinks better retrieval will fix it
+halden - contract with procurement, they want a security questionnaire filled in. who?? not sure thats us or InfoSec
+leila: validation plan drafted, needs QA sign-off
+decided: no patient-level data in the pilot, summaries only
+
+TODO: find out who fills in the security questionnaire
+Aisha to draft pilot success measures by 30 Oct
+need to tell Ben the medical writers can't paste patient-level data into Scribe

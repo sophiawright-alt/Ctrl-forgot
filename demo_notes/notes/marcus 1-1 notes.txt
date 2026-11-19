@@ -1,0 +1,9 @@
+Marcus 1:1s
+
+7 Oct 2026
+migration is eating everything. wants to hand over the pipeline on-call, says it's always him. fair
+Marcus to write up what a fair on-call rota would look like
+
+4 Nov 2026
+rota write-up not done, he forgot. no rush
+frustrated that InfoSec haven't approved the pilot environment yet

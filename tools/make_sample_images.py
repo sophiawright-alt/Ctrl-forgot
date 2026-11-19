@@ -1,4 +1,4 @@
-"""Regenerates the two sample images in sample_notes/photos. Development only.
+"""Regenerates the two sample images in sample_notes/notes. Development only.
 
 Needs Pillow (pip install pillow). The app itself never runs this and needs no
 packages. The "notebook page" is drawn with a slanted computer font, which is
@@ -11,7 +11,7 @@ import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
-OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "sample_notes", "photos")
+OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "sample_notes", "notes")
 FONTS = "/usr/share/fonts/truetype/dejavu/"
 
 

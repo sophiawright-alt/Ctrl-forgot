@@ -23,7 +23,7 @@ You can also double-click **Second Brain.pyw** in this folder instead of making 
 
 Settings for the desktop app (your own notes folder, a fixed date for rehearsing the demo, a lighter model) go in **settings.txt**. Open it in Notepad; the instructions are inside.
 
-**Protected folders.** To make a folder need a passcode before the assistant may open it, add `protect = private-hr` (comma-separate several) and a `passcode =` line to settings.txt. For a passcode that is not readable in the file, run `python tools/passcode.py` and paste the line it prints. Protected folders are skipped by "Switch all on", five wrong tries locks them for a minute, every attempt is on the receipt, and they lock again when the session ends. This controls what the assistant opens; it does not encrypt the files on disk.
+**Protected folders.** To make a folder need a passcode before the assistant may open it, add `protect = private` (comma-separate several) and a `passcode =` line to settings.txt. For a passcode that is not readable in the file, run `python tools/passcode.py` and paste the line it prints. Protected folders are skipped by "Switch all on", five wrong tries locks them for a minute, every attempt is on the receipt, and they lock again when the session ends. This controls what the assistant opens; it does not encrypt the files on disk.
 
 Double-clicking again while it is already running just brings up the window again. If the window crashes without closing properly, the app quits by itself after four minutes.
 
@@ -71,9 +71,9 @@ Not read: old `.doc` files (save as `.docx`), locked PDFs (the app says so; use 
 
 ## Handwriting
 
-Put a photo of a handwritten page (JPG or PNG; export iPhone HEIC photos as JPG first) in a folder under your notes folder and switch that folder on. The local vision model transcribes it, in memory only. The transcription is then searchable and citable like any other note, marked "read from image", and clicking a citation shows the photo next to the transcription so you can check it. Words the model was unsure of are marked `[?]`.
+Put a photo of a handwritten page (JPG; export iPhone HEIC photos as JPG first, and save screenshots as PNG) in your `notes` folder. The local vision model transcribes it, in memory only. The transcription is then searchable and citable like any other note, marked "read from image", and clicking a citation shows the photo next to the transcription so you can check it. Words the model was unsure of are marked `[?]`.
 
-`sample_notes/photos/2026-11-10 notebook page.jpg` is computer-drawn so the sample set works out of the box. **For your demo, replace it with a real photo**: write these lines by hand, photograph them, and save over that file (keep the date at the start of the file name):
+`sample_notes/notes/2026-11-10 notebook page.jpg` is computer-drawn so the sample set works out of the box. **For your demo, replace it with a real photo**: write these lines by hand, photograph them, and save over that file (keep the date at the start of the file name):
 
 ```
 Tues 10 Nov - corridor chat w/ Priya
@@ -86,18 +86,20 @@ do before 1:1 on the 16th
 
 ## A 3-minute demo script
 
+For the pharma AI team demo set, use **DEMO.md** instead. The script below uses `sample_notes`.
+
 Rehearse with `python3 run.py --today 2026-11-16` so "3 weeks ago" labels stay the same whatever day you record.
 
 1. **Start blind.** Receipt shows 0 notes read. "I can't see anything yet." (Knowledge stays yours: you choose what it sees.)
-2. Switch on `1-1s`, `meetings`, `scratch`, `photos`. **Leave `private-hr` off.** Watch the receipt list each file as it is read, and the photos being read by the local model.
+2. Switch on `notes`. **Leave `private` off.** Watch the receipt list each file as it is read, and the photos being read by the local model.
 3. Click **Priya**. Walk down the brief:
    - "Probably done or overtaken": the forecast action from 6 Oct was never ticked off, but the 1:1 note of 14 Oct says "forecast sent". Two notes that never met. (Connect.)
    - "Still open": you promised to find out about conference budget four weeks ago.
    - "Decisions on record": "said yes in principle" comes from the handwritten page. Click the number to see the photo beside the transcription. (More than one kind of content.)
-   - The amber box: "I have not looked in the folder you switched off: private-hr". (Honest about what it has not seen.)
+   - The amber box: "I have not looked in the folder you switched off: private". (Honest about what it has not seen.)
    - "In short": the model's summary. Every point has source numbers; it says how many points it threw away because it could not trace them to a note.
 4. Tab **Find something I wrote down** → "What did we decide about the Helix budget?" → **£40k → £28k**: your notes disagree, the newer one wins, and the unsent director update still has the old number. (Messy and out of date is normal.)
-5. Ask "What is Priya's salary?" → "That is not in the notes I can see." (Honest when unsure.) Then switch `private-hr` on to show it is your choice, and off again: "Forgot 2 notes."
+5. Ask "What is Priya's salary?" → "That is not in the notes I can see." (Honest when unsure.) Then unlock `private` with its passcode to show it is your choice (try a wrong code first: it is on the receipt), and switch it off again: "Forgot 2 notes."
 6. Click **Try to break the rule**. The assistant really tries to reach the internet, save a copy and start another program. All blocked.
 7. **Turn Wi-Fi off** and run another prep. It still works.
 8. Click **End session and forget everything**. Final receipt: notes byte-for-byte identical, 0 sent, 0 saved. In a terminal, `python3 tools/fingerprint.py sample_notes` prints the same fingerprint before and after.
@@ -139,7 +141,9 @@ secondbrain/brief.py     meeting prep and find; the check on the model's answers
 secondbrain/llm.py       the local model (Ollama) and its prompts
 secondbrain/server.py    local web server
 web/                     the page (plain HTML, CSS, JavaScript). Looks: web/style.css
-sample_notes/            fictional manager notes, made up for this prototype
+demo_notes/              the demo set (a pharma AI team rolling out an AI assistant); see DEMO.md
+sample_notes/            fictional manager notes, made up for this prototype (used by the tests):
+                         notes/ (everything) and private/ (needs a passcode if you set one)
 tools/passcode.py        makes a hashed passcode line for settings.txt
 tools/fingerprint.py     independent "did anything change?" check
 tools/make_sample_images.py   regenerates the sample images (development only, needs Pillow)

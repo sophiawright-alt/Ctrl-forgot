@@ -24,6 +24,11 @@ _SELF = re.compile(r"\b(i need to|need to|remember to|don'?t forget(?: to)?|remi
                    r"i said i'?d|i said i would|i promised|still haven'?t)\b", re.I)
 _DONE_WORDS = r"done|sent|completed?|sorted|finished|delivered|received|shipped|signed|booked|closed|submitted"
 _DONE = re.compile(r"(✓|✔|~~|\(done\)|\b(?:%s)\b\s*[.!]?\s*$|^\s*(?:[-*+]\s*)?done\b)" % _DONE_WORDS, re.I)
+# "not done", "haven't signed off", "still waiting": the opposite of done or decided
+_NEGATED = re.compile(r"\b(not|never|no|n't|nt|still waiting|not yet|yet to)\b[\w\s']{0,14}?\b(%s|signed[- ]off|sign[- ]off|"
+                      r"approved|agreed|decided|confirmed)\b|\b(haven'?t|hasn'?t|didn'?t|wasn'?t|weren'?t|isn'?t|aren'?t)\b"
+                      % "done|sent|completed?|sorted|finished|delivered|received|shipped|signed|booked|closed|submitted",
+                      re.I)
 _DONE_ANY = re.compile(r"(✓|✔|\[[xX]\]|\b(?:%s)\b)" % _DONE_WORDS, re.I)
 _OWNER_MID = re.compile(r"(?:[.;,:]\s+|\s[-–—]\s)(?P<owner>[A-Z][a-z]{1,14})\s+to\s+(?P<body>[a-z]+\s.+)$")
 _DECISION = re.compile(
@@ -113,10 +118,10 @@ def classify_line(line, ref_date):
 
     if _UNDECIDED.search(text) or (_QUESTION.search(text) and not action):
         item["kinds"].append("question")
-    elif _DECISION.search(text) and not text.endswith("?"):
+    elif _DECISION.search(text) and not text.endswith("?") and not _NEGATED.search(text):
         if _STRONG_DECISION.search(text) or values(text, ref_date):
             item["kinds"].append("decision")
-    if not action and _DONE_ANY.search(raw):
+    if not action and _DONE_ANY.search(raw) and not _NEGATED.search(raw):
         item["reports_done"] = True
     return item if (item["kinds"] or item.get("reports_done")) else None
 
@@ -195,7 +200,7 @@ _VERB_STEMS = set(stems("send sent do done complete completed sort sorted finish
 
 def resolves(action_text, later_text, owner=None):
     """Does a later line look like it reports this action as done?"""
-    if not _DONE_ANY.search(later_text):
+    if not _DONE_ANY.search(later_text) or _NEGATED.search(later_text):
         return False
     a = content_stems(action_text) - _MONTH_STEMS - _VERB_STEMS
     b = content_stems(later_text) - _MONTH_STEMS - _VERB_STEMS

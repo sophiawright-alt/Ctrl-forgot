@@ -61,6 +61,13 @@ class Rules(unittest.TestCase):
         self.assertTrue(extract.classify_line("- [x] book the room", ref)["done"])
         self.assertIsNone(extract.classify_line("just some chatter about lunch", ref))
 
+    def test_not_done_is_not_done(self):
+        ref = dt.date(2026, 11, 4)
+        self.assertFalse(extract.resolves("Marcus to write up a fair on-call rota", "rota write-up not done, he forgot"))
+        self.assertTrue(extract.resolves("Marcus to write up a fair on-call rota", "rota write-up done, thanks Marcus"))
+        self.assertNotIn("decision", (extract.classify_line("InfoSec still haven't signed off the pilot", ref) or {}).get("kinds", []))
+        self.assertIn("decision", extract.classify_line("Agreed: go with Halden for the pilot", ref)["kinds"])
+
     def test_changes(self):
         found = extract.find_changes([("a", "Helix budget £40k for year one", dt.date(2026, 10, 6)),
                                       ("b", "Helix budget cut to £28k for year one", dt.date(2026, 11, 3)),
@@ -204,7 +211,7 @@ class Speed(unittest.TestCase):
         folder = tempfile.mkdtemp()
         try:
             os.mkdir(os.path.join(folder, "photos"))
-            shutil.copy(os.path.join(ROOT, "sample_notes", "photos", "2026-11-12 chat with dan.png"),
+            shutil.copy(os.path.join(ROOT, "sample_notes", "notes", "2026-11-12 chat with dan.png"),
                         os.path.join(folder, "photos", "chat.png"))
             s = Session(folder, self.ledger, self.model)
             s.set_allowed("photos", True)
@@ -258,7 +265,7 @@ class Speed(unittest.TestCase):
         folder = tempfile.mkdtemp()
         try:
             os.mkdir(os.path.join(folder, "photos"))
-            shutil.copy(os.path.join(ROOT, "sample_notes", "photos", "2026-11-12 chat with dan.png"),
+            shutil.copy(os.path.join(ROOT, "sample_notes", "notes", "2026-11-12 chat with dan.png"),
                         os.path.join(folder, "photos", "chat.png"))
             s = Session(folder, self.ledger, self.model)
             s.foreground_begin()                                  # someone is waiting for an answer
@@ -353,7 +360,7 @@ class Passcodes(unittest.TestCase):
         from secondbrain.session import Session
         self.ledger = Ledger()
         self.s = Session(os.path.join(ROOT, "sample_notes"), self.ledger, LocalModel(self.ledger, port=1),
-                         protected=["private-hr"], passcode=passcode.make("4821"))
+                         protected=["private"], passcode=passcode.make("4821"))
 
     def test_hash(self):
         from secondbrain import passcode
@@ -367,32 +374,32 @@ class Passcodes(unittest.TestCase):
     def test_protected_folder(self):
         from secondbrain.session import PasscodeError
         with self.assertRaises(PasscodeError):
-            self.s.set_allowed("private-hr", True)                 # no passcode
+            self.s.set_allowed("private", True)                 # no passcode
         with self.assertRaises(PasscodeError):
-            self.s.set_allowed("private-hr", True, passcode="0000")
-        self.assertNotIn("private-hr", self.s.allowed)
+            self.s.set_allowed("private", True, passcode="0000")
+        self.assertNotIn("private", self.s.allowed)
         self.assertEqual(self.ledger.blocked, 1)                   # the wrong try is on the receipt
-        self.s.set_allowed("private-hr", True, passcode="4821")
-        self.assertIn("private-hr", self.s.allowed)
-        self.assertTrue(any(d.unit == "private-hr" for d in self.s.docs.values()))
-        self.s.set_allowed("private-hr", False)
+        self.s.set_allowed("private", True, passcode="4821")
+        self.assertIn("private", self.s.allowed)
+        self.assertTrue(any(d.unit == "private" for d in self.s.docs.values()))
+        self.s.set_allowed("private", False)
         with self.assertRaises(PasscodeError):
-            self.s.set_allowed("private-hr", True)                 # switching off locks it again
+            self.s.set_allowed("private", True)                 # switching off locks it again
 
     def test_lockout(self):
         from secondbrain.session import PasscodeError
         for _ in range(5):
             with self.assertRaises(PasscodeError):
-                self.s.set_allowed("private-hr", True, passcode="0000")
+                self.s.set_allowed("private", True, passcode="0000")
         with self.assertRaises(PasscodeError) as e:
-            self.s.set_allowed("private-hr", True, passcode="4821")   # right code, but locked out
+            self.s.set_allowed("private", True, passcode="4821")   # right code, but locked out
         self.assertIn("Wait", str(e.exception))
 
     def test_no_passcode_set_means_closed(self):
         from secondbrain.session import PasscodeError, Session
-        s = Session(os.path.join(ROOT, "sample_notes"), self.ledger, self.s.model, protected=["private-hr"])
+        s = Session(os.path.join(ROOT, "sample_notes"), self.ledger, self.s.model, protected=["private"])
         with self.assertRaises(PasscodeError):
-            s.set_allowed("private-hr", True, passcode="anything")
+            s.set_allowed("private", True, passcode="anything")
 
 
 class Versions(unittest.TestCase):
@@ -433,7 +440,7 @@ class PDF(unittest.TestCase):
         folder = tempfile.mkdtemp()
         try:
             os.mkdir(os.path.join(folder, "scans"))
-            with open(os.path.join(ROOT, "sample_notes", "photos", "2026-11-10 notebook page.jpg"), "rb") as f:
+            with open(os.path.join(ROOT, "sample_notes", "notes", "2026-11-10 notebook page.jpg"), "rb") as f:
                 jpeg = f.read()
             with open(os.path.join(folder, "scans", "2026-11-10 scanned notebook.pdf"), "wb") as f:
                 f.write(scan_pdf(jpeg))
@@ -552,7 +559,7 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("gpt-oss:120b-cloud", s["model"]["models"])       # cloud models are never used
 
     def test_2_only_reads_what_is_switched_on(self):
-        for f in ("1-1s", "meetings", "scratch", "photos"):
+        for f in ("notes",):
             call("/api/allow", {"folder": f, "on": True})
         for _ in range(40):
             _, s = call("/api/state")
@@ -560,7 +567,7 @@ class EndToEnd(unittest.TestCase):
                 break
             time.sleep(0.25)
         self.assertEqual(s["notes_in_memory"], 13)
-        self.assertFalse(any(p.startswith("private-hr") for p in s["receipt"]["files"]))
+        self.assertFalse(any(p.startswith("private") for p in s["receipt"]["files"]))
         self.assertEqual({n["image_kind"] for u in s["units"] for n in u["notes"] if n["kind"] == "image"},
                          {"handwriting", "screenshot"})
 
@@ -575,7 +582,7 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("forecast sent", done["Priya to send revised forecast by Fri"])
         self.assertTrue(any(a.get("overdue") for a in b["open_actions"]))
         self.assertTrue(any(d["handwriting"] and "yes in principle" in d["text"] for d in b["decisions"]))
-        self.assertTrue(any("private-hr" in h for h in b["honesty"]))
+        self.assertTrue(any("private" in h for h in b["honesty"]))
         _, ai = call("/api/prep/ai", {"query": "Priya"})
         self.assertEqual((len(ai["talking_points"]), ai["dropped"]), (1, 2))  # invented + unsourced points removed
 
@@ -688,13 +695,15 @@ class EndToEnd(unittest.TestCase):
         self.assertFalse(call("/api/ask/ai", {"question": "What is Priya's salary?"})[1]["available"])
 
     def test_7_switching_off_forgets(self):
-        call("/api/allow", {"folder": "photos", "on": False})
+        for photo in ("notes/2026-11-10 notebook page.jpg", "notes/2026-11-12 chat with dan.png"):
+            call("/api/hide", {"note": photo, "hide": True})       # hide just these two notes
         _, s = call("/api/state")
         self.assertEqual(s["notes_in_memory"], 11)
         _, b = call("/api/prep", {"query": "Kofi"})
         self.assertFalse(b["found"])
-        self.assertEqual(call("/api/source?id=photos/2026-11-10%20notebook%20page.jpg")[0], 404)
-        call("/api/allow", {"folder": "photos", "on": True})
+        self.assertEqual(call("/api/source?id=notes/2026-11-10%20notebook%20page.jpg")[0], 404)
+        for photo in ("notes/2026-11-10 notebook page.jpg", "notes/2026-11-12 chat with dan.png"):
+            call("/api/hide", {"note": photo, "hide": False})
 
     def test_8_lock_holds(self):
         _, r = call("/api/selftest", {})

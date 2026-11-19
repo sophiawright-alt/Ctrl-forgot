@@ -1,4 +1,4 @@
-"""Regenerates the sample PDF in sample_notes/scratch. Development only.
+"""Regenerates the sample PDF in sample_notes/notes. Development only.
 
 Needs reportlab (pip install reportlab). The app itself never runs this and
 reads PDFs with nothing but Python.
@@ -10,7 +10,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "sample_notes", "scratch")
+OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(__file__), "..", "sample_notes", "notes")
 path = os.path.join(OUT, "2026-11-09 finance budget letter.pdf")
 ss = getSampleStyleSheet()
 doc = SimpleDocTemplate(path, pagesize=A4, title="Budget confirmation", author="Finance (fictional)")
