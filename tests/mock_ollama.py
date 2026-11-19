@@ -74,7 +74,9 @@ class H(BaseHTTPRequestHandler):
             msg = body["messages"][-1]
             if msg.get("images"):
                 size = len(msg["images"][0])
-                out = TRANSCRIPTS["notebook"] if size > 100000 else TRANSCRIPTS["chat"]
+                out = dict(TRANSCRIPTS["notebook"] if size > 100000 else TRANSCRIPTS["chat"])
+                if MODE.get("label") == "no_text":
+                    out["kind"] = "no_text"
             elif "Question:" in msg["content"] and MODE.get("ask") == "unsure":   # small-model habits
                 out = {"found": False, "caveat": "", "answer": [
                     {"point": "The Helix pilot start moved to 1 Dec, with 2 teams not 4.", "sources": ["1", "[2]"]}]}

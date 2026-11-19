@@ -182,6 +182,43 @@ class Speed(unittest.TestCase):
         st = self.model.refresh(force=True)
         self.assertEqual((st["chat"], st["vision"]), ("qwen3-vl:8b", "qwen3-vl:8b"))
 
+    def test_photos_get_room_to_be_read(self):
+        mock_ollama.MODELS["qwen3-vl:2b-instruct"] = "2.1B"
+        mock_ollama.MODELS["qwen3-vl:4b-instruct"] = "4.4B"
+        os.environ["SECOND_BRAIN_CONTEXT"] = "3072"
+        try:
+            st = self.model.refresh(force=True)
+            self.assertEqual((st["chat"], st["vision"]), ("qwen3-vl:4b-instruct", "qwen3-vl:8b"))
+            self.assertEqual(self.model.context_for(st["chat"]), 3072)               # your setting, for answers
+            self.assertEqual(self.model.context_for("qwen3-vl:2b-instruct"), 3072)
+            self.assertEqual(self.model.context_for(st["vision"]), 8192)             # photos always get room
+            self.assertEqual(self.model.context_for(st["chat"], reading_images=True), 8192)
+        finally:
+            del os.environ["SECOND_BRAIN_CONTEXT"]
+
+    def test_text_beats_a_no_text_label(self):
+        import shutil
+        import tempfile
+        from secondbrain.session import Session
+        mock_ollama.MODE["label"] = "no_text"                # a small model mislabels the photo
+        folder = tempfile.mkdtemp()
+        try:
+            os.mkdir(os.path.join(folder, "photos"))
+            shutil.copy(os.path.join(ROOT, "sample_notes", "photos", "2026-11-12 chat with dan.png"),
+                        os.path.join(folder, "photos", "chat.png"))
+            s = Session(folder, self.ledger, self.model)
+            s.set_allowed("photos", True)
+            for _ in range(40):
+                if s.docs["photos/chat.png"].status not in ("queued", "reading"):
+                    break
+                time.sleep(0.1)
+            self.assertEqual(s.docs["photos/chat.png"].status, "ready")
+            img_req = [c for c in mock_ollama.CHATS if c[1].get("num_ctx")][-1]
+            self.assertEqual(img_req[1]["num_ctx"], 8192)
+        finally:
+            mock_ollama.MODE["label"] = "normal"
+            shutil.rmtree(folder)
+
     def test_same_working_memory_everywhere(self):
         self.model.refresh(force=True)
         self.assertEqual(self.model.context_for("qwen3-vl:4b-instruct"), 4096)

@@ -146,7 +146,7 @@ class LocalModel:
             message["images"] = [base64.b64encode(b).decode("ascii") for b in images]
         body = {"model": model, "stream": False, "format": schema, "keep_alive": "30m",
                 "messages": [{"role": "system", "content": system}, message],
-                "options": {"temperature": 0.1, "num_ctx": self.context_for(model)}}
+                "options": {"temperature": 0.1, "num_ctx": self.context_for(model, reading_images=bool(images))}}
         if model not in self._no_think:
             body["think"] = False                # answer directly; skip "thinking" where supported
         sent = len(system) + len(user)
@@ -179,7 +179,9 @@ class LocalModel:
                                      "seconds": round(time.time() - t0, 1)})
         return _parse_answer(content)
 
-    def context_for(self, model):
+    IMAGE_CONTEXT = 8192                         # a photo alone can take a few thousand tokens
+
+    def context_for(self, model, reading_images=False):
         """How much working memory (tokens) to ask Ollama for.
 
         Every request to a model must ask for the same amount, or Ollama reloads the model,
@@ -187,6 +189,16 @@ class LocalModel:
         4096 tokens comfortably holds a brief's notes and answer. "Thinking" models
         reason at length first, so they get 8192.
         """
+        # Reading a photo needs room for the photo: with too little, Ollama cuts the image off
+        # and the model sees nothing. A model kept just for photos always gets enough. When one
+        # model does both jobs, answers (which you wait for) keep the smaller size, and Ollama
+        # briefly reloads the model when it switches to reading a photo in the background.
+        st = self.status
+        if reading_images or (model == st.get("vision") and model != st.get("chat")):
+            return max(self.IMAGE_CONTEXT, self._chat_context(model))
+        return self._chat_context(model)
+
+    def _chat_context(self, model):
         env = os.environ.get("SECOND_BRAIN_CONTEXT")
         if env and env.isdigit():
             return int(env)

@@ -294,9 +294,10 @@ class Session:
                 finally:
                     self.reading_now = None
                 t = str(out.get("text") or "").replace("\\n", "\n").strip()
-                if t and out.get("kind") != "no_text":
+                if t and t.lower() not in ("no text", "no_text", "[illegible]", "none"):   # text beats the label
                     texts.append(("[page %d]\n" % n if len(pages) > 1 else "") + t)
-                    kinds.append(out.get("kind") or "handwriting")
+                    kind = out.get("kind")
+                    kinds.append(kind if kind and kind != "no_text" else "handwriting")
                 with self.lock:
                     if self.docs.get(doc_id) is not doc:
                         return                   # switched off while reading: stop and discard
