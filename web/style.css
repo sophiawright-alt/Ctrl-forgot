@@ -174,3 +174,5 @@ table.tests .note { color: var(--muted); font-size: 12.5px; display: block; }
 .events details.reply summary { cursor: pointer; color: var(--blue); }
 .events details.reply pre { white-space: pre-wrap; word-break: break-word; font: 11.5px/1.4 var(--mono); background: var(--bg);
   padding: 6px 8px; border-radius: 4px; margin: 4px 0 0; color: var(--text); }
+.pass-form { margin-top: 14px; max-width: 420px; }
+.pass-error { color: var(--red); font-size: 14px; min-height: 1.4em; margin: 8px 0 0; }

@@ -35,7 +35,7 @@ async function api(path, body) {
 const plural = (n, one, many) => n + " " + (n === 1 ? one : (many || one + "s"));
 
 // Must match __version__ in secondbrain/__init__.py.
-const APP_VERSION = "0.4.5";
+const APP_VERSION = "0.4.6";
 let STATE = null;
 let EVIDENCE = [];          // excerpts behind whatever is on screen
 let lastFolders = "", lastChips = "";
@@ -52,12 +52,12 @@ function renderFolders(s) {
   s.units.forEach(u => {
     const meta = u.allowed
       ? plural(u.notes.length, "note") + " in memory" + (u.skipped ? ", " + u.skipped + " skipped (file type)" : "")
-      : "off: not opened, not listed";
+      : u.protected ? "Protected: needs the passcode" : "off: not opened, not listed";
     const el = h("div", { class: "folder" + (u.allowed ? " on" : "") },
       h("div", { class: "folder-head" },
         h("button", { class: "switch" + (u.allowed ? " on" : ""), role: "switch", "aria-checked": String(u.allowed),
                       "aria-label": "Let the assistant see " + u.name,
-                      on: { click: () => toggle(u.name, !u.allowed) } }),
+                      on: { click: () => (u.protected && !u.allowed) ? askPasscode(u.name) : toggle(u.name, !u.allowed) } }),
         h("span", { class: "folder-name" }, u.name, h("span", { class: "folder-meta" }, meta))));
     if (u.allowed) {
       const list = h("ul", { class: "notes" });
@@ -78,6 +78,27 @@ function renderFolders(s) {
   $("folder-path").textContent = "Notes folder: " + s.folder;
 }
 async function toggle(folder, on) { apply(await api("/api/allow", { folder, on })); }
+function askPasscode(folder) {
+  const input = h("input", { type: "password", autocomplete: "off", id: "passcode", "aria-label": "Passcode" });
+  const err = h("p", { class: "pass-error", role: "alert" });
+  const form = h("form", { class: "field pass-form", on: { submit: async e => {
+    e.preventDefault();
+    try {
+      apply(await api("/api/allow", { folder, on: true, passcode: input.value }));
+      closeModal();
+    } catch (x) {
+      err.textContent = x.message;
+      input.value = "";
+      input.focus();
+    }
+  } } }, input, h("button", { type: "submit" }, "Unlock"));
+  openModal([
+    h("h2", null, "Unlock " + folder),
+    h("p", { class: "meta" }, "This folder is protected. Enter the passcode to let me see it for this session. " +
+      "When the session ends, it locks again."),
+    form, err]);
+  input.focus();
+}
 async function hide(note, hideIt) { apply(await api("/api/hide", { note, hide: hideIt })); }
 $("all-on").onclick = async () => apply(await api("/api/allow_all", { on: true }));
 $("all-off").onclick = async () => apply(await api("/api/allow_all", { on: false }));
@@ -87,7 +108,7 @@ function describe(e) {
   const d = e.detail || {};
   switch (e.kind) {
     case "read": return ["Read ", h("b", null, d.path)];
-    case "allow": return ["You switched on ", h("b", null, d.folder || d.note)];
+    case "allow": return ["You switched on ", h("b", null, d.folder || d.note), d.passcode ? " (passcode accepted)" : ""];
     case "revoke": return ["You switched off ", h("b", null, d.folder || d.note), ". Forgot " + plural(d.notes_forgotten || 0, "note") + "."];
     case "model": return [h("span", { class: "model" }, "Local model"), ": " + (d.purpose || "request") +
       ". " + (d.sent_chars || 0).toLocaleString() + " characters" + (d.images ? " and " + plural(d.images, "image") : "") +

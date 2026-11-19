@@ -50,14 +50,27 @@ class Doc:
                 "image_kind": self.image_kind, "uncertain": self.uncertain, "note": self.note}
 
 
+class PasscodeError(ValueError):
+    """Opening a protected folder needs the right passcode."""
+
+    def __init__(self, message, needs_passcode=True):
+        super().__init__(message)
+        self.needs_passcode = needs_passcode
+
+
 class Session:
-    def __init__(self, root, ledger, model, today=None):
+    MAX_TRIES, LOCKOUT_SECONDS = 5, 60
+
+    def __init__(self, root, ledger, model, today=None, protected=(), passcode=None):
         self.root = os.path.normcase(os.path.realpath(root))
         self.ledger = ledger
         self.model = model
         self._today = today
         self.lock = threading.RLock()
         self.allowed = set()                  # unit names switched on
+        self.protected = {p.strip() for p in protected if p and p.strip()}   # need a passcode to switch on
+        self._passcode = passcode
+        self._wrong, self._locked_until = 0, 0.0
         self.hidden = set()                   # individual note ids switched off
         self.docs = {}                        # id -> Doc
         self.skipped = {}                     # unit -> count of unsupported files
@@ -106,13 +119,35 @@ class Session:
         names.sort(key=str.lower)
         return names + ([LOOSE] if loose else [])
 
-    def set_allowed(self, unit, on):
+    def _check_passcode(self, unit, given):
+        from . import passcode
+        if not self._passcode:
+            raise PasscodeError("This folder is protected, but no passcode is set in settings.txt, "
+                                "so it cannot be opened.", needs_passcode=False)
+        wait = int(self._locked_until - time.time())
+        if wait > 0:
+            raise PasscodeError("Too many wrong tries. Wait %d seconds and try again." % wait)
+        if not given:
+            raise PasscodeError("This folder is protected. Enter the passcode to open it.")
+        if not passcode.check(self._passcode, given):
+            self._wrong += 1
+            self.ledger.record("blocked", {"what": "open %s with a wrong passcode" % unit, "detail": ""})
+            if self._wrong >= self.MAX_TRIES:
+                self._wrong, self._locked_until = 0, time.time() + self.LOCKOUT_SECONDS
+                raise PasscodeError("Wrong passcode. Too many wrong tries: locked for %d seconds."
+                                    % self.LOCKOUT_SECONDS)
+            raise PasscodeError("Wrong passcode. %d tries left." % (self.MAX_TRIES - self._wrong))
+        self._wrong = 0
+
+    def set_allowed(self, unit, on, passcode=None):
         with self.lock:
             if unit not in self.units():
                 raise ValueError("no such folder")
+            if on and unit in self.protected and unit not in self.allowed:
+                self._check_passcode(unit, passcode)
             if on:
                 self.allowed.add(unit)
-                self.ledger.record("allow", {"folder": unit})
+                self.ledger.record("allow", {"folder": unit, "passcode": unit in self.protected})
                 # Get the model into memory now, so the first answer does not wait for it.
                 threading.Thread(target=self.model.warm, daemon=True).start()
             else:
@@ -371,7 +406,8 @@ class Session:
                 on = name in self.allowed
                 docs = sorted((d for d in self.docs.values() if d.unit == name), key=lambda d: d.id)
                 hidden = sorted(h for h in self.hidden if (h.split("/")[0] == name) or (name == LOOSE and "/" not in h))
-                units.append({"name": name, "allowed": on, "notes": [d.public() for d in docs],
+                units.append({"name": name, "allowed": on, "protected": name in self.protected,
+                              "notes": [d.public() for d in docs],
                               "hidden": hidden, "skipped": self.skipped.get(name, 0) if on else 0})
             ready = [d for d in self.docs.values() if d.status == "ready"]
             people = extract.find_people(ready)

@@ -345,6 +345,56 @@ def scan_pdf(jpeg, w=1000, h=1200):
                          b"/BitsPerComponent 8 /Filter /DCTDecode" % (w, h), jpeg)])
 
 
+class Passcodes(unittest.TestCase):
+    def setUp(self):
+        from secondbrain import passcode
+        from secondbrain.ledger import Ledger
+        from secondbrain.llm import LocalModel
+        from secondbrain.session import Session
+        self.ledger = Ledger()
+        self.s = Session(os.path.join(ROOT, "sample_notes"), self.ledger, LocalModel(self.ledger, port=1),
+                         protected=["private-hr"], passcode=passcode.make("4821"))
+
+    def test_hash(self):
+        from secondbrain import passcode
+        h = passcode.make("4821")
+        self.assertTrue(h.startswith("pbkdf2:") and "4821" not in h)
+        self.assertTrue(passcode.check(h, "4821"))
+        self.assertFalse(passcode.check(h, "4822"))
+        self.assertTrue(passcode.check("4821", "4821"))            # plain also works
+        self.assertFalse(passcode.check("", "4821"))
+
+    def test_protected_folder(self):
+        from secondbrain.session import PasscodeError
+        with self.assertRaises(PasscodeError):
+            self.s.set_allowed("private-hr", True)                 # no passcode
+        with self.assertRaises(PasscodeError):
+            self.s.set_allowed("private-hr", True, passcode="0000")
+        self.assertNotIn("private-hr", self.s.allowed)
+        self.assertEqual(self.ledger.blocked, 1)                   # the wrong try is on the receipt
+        self.s.set_allowed("private-hr", True, passcode="4821")
+        self.assertIn("private-hr", self.s.allowed)
+        self.assertTrue(any(d.unit == "private-hr" for d in self.s.docs.values()))
+        self.s.set_allowed("private-hr", False)
+        with self.assertRaises(PasscodeError):
+            self.s.set_allowed("private-hr", True)                 # switching off locks it again
+
+    def test_lockout(self):
+        from secondbrain.session import PasscodeError
+        for _ in range(5):
+            with self.assertRaises(PasscodeError):
+                self.s.set_allowed("private-hr", True, passcode="0000")
+        with self.assertRaises(PasscodeError) as e:
+            self.s.set_allowed("private-hr", True, passcode="4821")   # right code, but locked out
+        self.assertIn("Wait", str(e.exception))
+
+    def test_no_passcode_set_means_closed(self):
+        from secondbrain.session import PasscodeError, Session
+        s = Session(os.path.join(ROOT, "sample_notes"), self.ledger, self.s.model, protected=["private-hr"])
+        with self.assertRaises(PasscodeError):
+            s.set_allowed("private-hr", True, passcode="anything")
+
+
 class Versions(unittest.TestCase):
     def test_page_and_app_agree(self):
         import re as _re

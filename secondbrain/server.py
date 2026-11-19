@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__, brief, guard
+from .session import PasscodeError
 
 WEB = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
@@ -164,10 +165,12 @@ def make_handler(session, ledger):
             path = urlparse(self.path).path
             try:
                 if path == "/api/allow":
-                    session.set_allowed(str(body.get("folder")), bool(body.get("on")))
+                    session.set_allowed(str(body.get("folder")), bool(body.get("on")), passcode=body.get("passcode"))
                     return self._send(200, self._state())
                 if path == "/api/allow_all":
                     for u in session.units():
+                        if body.get("on") and u in session.protected:
+                            continue                    # protected folders are opened one at a time, with the passcode
                         if (u in session.allowed) != bool(body.get("on")):
                             session.set_allowed(u, bool(body.get("on")))
                     return self._send(200, self._state())
@@ -196,6 +199,8 @@ def make_handler(session, ledger):
                 if path == "/api/end":
                     receipt = session.end()
                     return self._send(200, {"receipt": receipt, "state": self._state()})
+            except PasscodeError as e:
+                return self._send(401, {"error": str(e), "needs_passcode": e.needs_passcode})
             except ValueError as e:
                 return self._send(400, {"error": str(e)})
             except Exception as e:

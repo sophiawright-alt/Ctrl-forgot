@@ -23,6 +23,8 @@ You can also double-click **Second Brain.pyw** in this folder instead of making 
 
 Settings for the desktop app (your own notes folder, a fixed date for rehearsing the demo, a lighter model) go in **settings.txt**. Open it in Notepad; the instructions are inside.
 
+**Protected folders.** To make a folder need a passcode before the assistant may open it, add `protect = private-hr` (comma-separate several) and a `passcode =` line to settings.txt. For a passcode that is not readable in the file, run `python tools/passcode.py` and paste the line it prints. Protected folders are skipped by "Switch all on", five wrong tries locks them for a minute, every attempt is on the receipt, and they lock again when the session ends. This controls what the assistant opens; it does not encrypt the files on disk.
+
 Double-clicking again while it is already running just brings up the window again. If the window crashes without closing properly, the app quits by itself after four minutes.
 
 ### From a terminal
@@ -138,6 +140,7 @@ secondbrain/llm.py       the local model (Ollama) and its prompts
 secondbrain/server.py    local web server
 web/                     the page (plain HTML, CSS, JavaScript). Looks: web/style.css
 sample_notes/            fictional manager notes, made up for this prototype
+tools/passcode.py        makes a hashed passcode line for settings.txt
 tools/fingerprint.py     independent "did anything change?" check
 tools/make_sample_images.py   regenerates the sample images (development only, needs Pillow)
 tools/make_sample_pdf.py      regenerates the sample PDF (development only, needs reportlab)

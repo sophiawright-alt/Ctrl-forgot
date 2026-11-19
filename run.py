@@ -64,7 +64,9 @@ def main():
 
     ledger = Ledger()
     model = LocalModel(ledger, port=args.ollama_port)
-    session = Session(notes, ledger, model, today=today)
+    session = Session(notes, ledger, model, today=today,
+                      protected=[p for p in (settings.get("protect") or "").split(",")],
+                      passcode=settings.get("passcode"))
     httpd, port = server.serve(session, ledger, args.port)
     url = "http://127.0.0.1:%d" % port
     if args.app:
