@@ -196,11 +196,11 @@ class Speed(unittest.TestCase):
         finally:
             del os.environ["SECOND_BRAIN_CONTEXT"]
 
-    def test_text_beats_a_no_text_label(self):
+    def read_photo(self, label):
         import shutil
         import tempfile
         from secondbrain.session import Session
-        mock_ollama.MODE["label"] = "no_text"                # a small model mislabels the photo
+        mock_ollama.MODE["label"] = label
         folder = tempfile.mkdtemp()
         try:
             os.mkdir(os.path.join(folder, "photos"))
@@ -212,12 +212,28 @@ class Speed(unittest.TestCase):
                 if s.docs["photos/chat.png"].status not in ("queued", "reading"):
                     break
                 time.sleep(0.1)
-            self.assertEqual(s.docs["photos/chat.png"].status, "ready")
-            img_req = [c for c in mock_ollama.CHATS if c[1].get("num_ctx")][-1]
-            self.assertEqual(img_req[1]["num_ctx"], 8192)
+            return s.docs["photos/chat.png"]
         finally:
             mock_ollama.MODE["label"] = "normal"
             shutil.rmtree(folder)
+
+    def test_photos_are_read_with_a_plain_question(self):
+        d = self.read_photo("normal")
+        self.assertEqual((d.status, d.image_kind), ("ready", "screenshot"))
+        self.assertIn("Dan: I can give you Kofi 2 days a week from 1 Dec.", d.lines)
+        chat = mock_ollama.PROMPTS[-1]
+        self.assertNotIn("format", [k for k in chat[-1]])                     # no fixed reply format
+        img_req = [c for c in mock_ollama.CHATS if c[1].get("num_ctx")][-1]
+        self.assertEqual(img_req[1]["num_ctx"], 8192)                           # room for the photo
+        reads = [e["detail"] for e in self.ledger.events if e["detail"].get("purpose", "").startswith("read image")]
+        self.assertIn("Kofi", reads[-1]["reply"])                               # "What it replied" for photos
+
+    def test_photo_replies_are_tidied(self):
+        for label in ("fenced", "json"):
+            d = self.read_photo(label)
+            self.assertEqual(d.status, "ready", label)
+            self.assertFalse(any("```" in l or l.startswith("{") for l in d.lines), label)
+        self.assertEqual(self.read_photo("blank").status, "empty")
 
     def test_same_working_memory_everywhere(self):
         self.model.refresh(force=True)

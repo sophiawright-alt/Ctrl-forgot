@@ -341,6 +341,39 @@ class LocalModel:
             self.ledger.record("model", detail)
         yield "done", answer
 
+    def transcribe(self, model, image, purpose="", timeout=900):
+        """Read the text in one image, as plain text.
+
+        Asked as a plain question, not in a fixed reply format: with a photo attached,
+        a fixed format can stop some models reading the photo at all (they answer "no text").
+        Returns "" if the image has no readable text.
+        """
+        user = TRANSCRIBE_ASK + ("\n/no_think" if "qwen" in model.lower() else "")
+        body = {"model": model, "stream": False, "keep_alive": "30m",
+                "messages": [{"role": "system", "content": TRANSCRIBE_SYSTEM},
+                             {"role": "user", "content": user,
+                              "images": [base64.b64encode(image).decode("ascii")]}],
+                "options": {"temperature": 0.1, "num_ctx": self.context_for(model, reading_images=True)}}
+        if model not in self._no_think:
+            body["think"] = False
+        t0 = time.time()
+        detail = {"purpose": purpose, "model": model, "sent_chars": len(TRANSCRIBE_SYSTEM) + len(user), "images": 1}
+        try:
+            resp = self._request("POST", "/api/chat", body, timeout=timeout)
+            text = (resp.get("message") or {}).get("content") or ""
+            if not text.strip() and "think" in body:   # some Ollama versions: nothing when thinking is off
+                self._no_think.add(model)
+                del body["think"]
+                resp = self._request("POST", "/api/chat", body, timeout=timeout)
+                text = (resp.get("message") or {}).get("content") or ""
+        except ModelError as e:
+            detail["error"] = str(e)[:160]
+            self.ledger.record("model", detail)
+            raise
+        detail.update({"received_chars": len(text), "seconds": round(time.time() - t0, 1), "reply": text[:400]})
+        self.ledger.record("model", detail)
+        return _clean_transcript(text)
+
     def embed(self, model, texts, purpose="meaning search"):
         resp = self._request("POST", "/api/embed", {"model": model, "input": texts, "keep_alive": "10m"}, timeout=120)
         vectors = resp.get("embeddings") or []
@@ -376,6 +409,21 @@ def _billions(name, reported):
         if m:
             return float(m.group(1)) / (1000.0 if m.group(2) == "m" else 1.0)
     return None
+
+
+def _clean_transcript(text):
+    """Strip what models add around a transcription: code fences, a stray JSON wrapper, "no text"."""
+    t = text.strip()
+    t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", t).strip()
+    if t.startswith("{") and t.endswith("}"):        # a model that answered in JSON anyway
+        try:
+            obj = json.loads(t)
+            t = str(obj.get("text") or "") if isinstance(obj, dict) else t
+        except ValueError:
+            pass
+    if re.fullmatch(r"(?i)\W*(no[ _]text|no readable text|none|\[illegible\])\W*", t or "none"):
+        return ""
+    return t.replace("\\n", "\n").strip()
 
 
 def _parse_answer(content):
@@ -497,9 +545,11 @@ def partial_json(text):
 
 TRANSCRIBE_SYSTEM = (
     "You transcribe photos of handwritten notes, whiteboards and screenshots for their owner. "
-    "Copy the text exactly as written, keeping line breaks. Do not correct, tidy, summarise, translate or add anything. "
+    "Copy the text exactly as written, keeping line breaks. Do not correct, tidy, summarise, translate or add anything, "
+    "and do not add any introduction or comment of your own. "
     "Where a word is hard to read, give your best guess followed by [?]. "
-    "If you cannot read a word at all write [illegible]. If the image has no readable text, set kind to no_text.")
+    "If you cannot read a word at all write [illegible]. If the image has no readable text, reply only: NO TEXT")
+TRANSCRIBE_ASK = "What text is in this image? Copy it exactly."
 TRANSCRIBE_SCHEMA = {
     "type": "object",
     "properties": {

@@ -77,6 +77,15 @@ class H(BaseHTTPRequestHandler):
                 out = dict(TRANSCRIPTS["notebook"] if size > 100000 else TRANSCRIPTS["chat"])
                 if MODE.get("label") == "no_text":
                     out["kind"] = "no_text"
+                if not body.get("format"):                  # asked plainly: a plain-text reply, like Ollama
+                    reply = out["text"]
+                    if MODE.get("label") == "fenced":
+                        reply = "```\n" + reply + "\n```"
+                    elif MODE.get("label") == "json":
+                        reply = json.dumps(out)
+                    elif MODE.get("label") == "blank":
+                        reply = "NO TEXT"
+                    return self._send({"message": {"role": "assistant", "content": reply}})
             elif "Question:" in msg["content"] and MODE.get("ask") == "unsure":   # small-model habits
                 out = {"found": False, "caveat": "", "answer": [
                     {"point": "The Helix pilot start moved to 1 Dec, with 2 teams not 4.", "sources": ["1", "[2]"]}]}

@@ -283,21 +283,17 @@ class Session:
             if pages is None:
                 with open(path, "rb") as f:
                     pages = [f.read()]
-            texts, kinds = [], []
+            texts = []
             for n, img in enumerate(pages, 1):
                 self._yield_to_foreground()
                 self.reading_now = doc_id
                 try:
-                    out = self.model.chat_json(vision, llm.TRANSCRIBE_SYSTEM,
-                                           "Transcribe this image.", llm.TRANSCRIBE_SCHEMA, images=[img], timeout=900,
-                                           purpose="read image %s%s" % (doc_id, " page %d" % n if len(pages) > 1 else ""))
+                    t = self.model.transcribe(vision, img, timeout=900,
+                                              purpose="read image %s%s" % (doc_id, " page %d" % n if len(pages) > 1 else ""))
                 finally:
                     self.reading_now = None
-                t = str(out.get("text") or "").replace("\\n", "\n").strip()
-                if t and t.lower() not in ("no text", "no_text", "[illegible]", "none"):   # text beats the label
+                if t:
                     texts.append(("[page %d]\n" % n if len(pages) > 1 else "") + t)
-                    kind = out.get("kind")
-                    kinds.append(kind if kind and kind != "no_text" else "handwriting")
                 with self.lock:
                     if self.docs.get(doc_id) is not doc:
                         return                   # switched off while reading: stop and discard
@@ -317,9 +313,11 @@ class Session:
             if self.docs.get(doc_id) is not doc:
                 return                           # permission was withdrawn while reading: discard
             text = "\n\n".join(texts)
-            out = {"kind": kinds[0] if kinds else "no_text"}
-            doc.image_kind = out.get("kind") or "handwriting"
-            if not text or doc.image_kind == "no_text":
+            # what sort of picture it is, for the label in the list: screenshots are usually saved as PNG
+            doc.image_kind = ("scan" if doc.images else
+                              "screenshot" if os.path.splitext(doc.path)[1].lower() in (".png", ".webp", ".bmp", ".gif")
+                              else "handwriting")
+            if not text:
                 doc.status, doc.note = "empty", "no readable text found"
             else:
                 doc.set_text(text)
