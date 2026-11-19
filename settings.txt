@@ -16,6 +16,9 @@ vision_model = qwen3-vl:4b-instruct
 # which can get a model running fully on the graphics card ("100% GPU" in "ollama ps").
 # Do not go below 3072, or long notes and photos may not fit.
 context = 3072
-protect = private
+
 passcode = 1234
+notes = demo_notes
+today = 2026-11-23
+protect = private
 
