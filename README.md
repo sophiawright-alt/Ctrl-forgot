@@ -1,3 +1,5 @@
+<img src="docs/icon.png" alt="" width="96">
+
 # Ctrl+Forgot
 
 *For everything you forgot you wrote down.*
