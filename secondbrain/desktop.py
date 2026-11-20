@@ -91,7 +91,7 @@ def open_window(url):
     return "default browser"
 
 
-def tell(message, title="Second Brain"):
+def tell(message, title="Ctrl+Forgot"):
     """Show a message box (no console is available in --app mode)."""
     if os.environ.get("SECOND_BRAIN_NO_WINDOW"):
         print(message)

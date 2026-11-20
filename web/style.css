@@ -1,4 +1,4 @@
-/* Second Brain UI. System fonts only (no external resources). */
+/* Ctrl+Forgot UI. System fonts only (no external resources). */
 :root {
   --bg: #f6f7f9; --surface: #ffffff; --text: #18212f; --muted: #627084; --line: #e2e6eb;
   --blue: #1f4fbf; --blue-soft: #eef3fd; --green: #17794a; --red: #b3261e; --amber: #8a5a00; --mark: #fff2b3;

@@ -13,7 +13,7 @@ import sys
 import threading
 
 if sys.version_info < (3, 8):
-    sys.exit("Second Brain needs Python 3.8 or newer. You have %s." % sys.version.split()[0])
+    sys.exit("Ctrl+Forgot needs Python 3.8 or newer. You have %s." % sys.version.split()[0])
 
 sys.dont_write_bytecode = True               # no .pyc files
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -78,7 +78,7 @@ def main():
 
     status = model.refresh(force=True)
     print("")
-    print("  Second Brain is running on this computer only.")
+    print("  Ctrl+Forgot is running on this computer only.")
     print("  Open:   %s%s" % (url, "   (opened in: %s)" % how if args.app else ""))
     print("  Notes:  %s" % notes)
     if status["running"] and status["chat"]:

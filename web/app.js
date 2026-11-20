@@ -1,4 +1,4 @@
-/* Second Brain web UI. Talks only to the server it was loaded from. Note text is
+/* Ctrl+Forgot web UI. Talks only to the server it was loaded from. Note text is
    always inserted as text nodes (never HTML), and nothing is kept in browser storage. */
 "use strict";
 
@@ -34,7 +34,7 @@ async function api(path, body) {
 const plural = (n, one, many) => n + " " + (n === 1 ? one : (many || one + "s"));
 
 // Must match __version__ in secondbrain/__init__.py.
-const APP_VERSION = "0.4.6";
+const APP_VERSION = "0.4.7";
 let STATE = null;
 let EVIDENCE = [];          // excerpts cited by the current result
 let lastFolders = "", lastChips = "";

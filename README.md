@@ -1,10 +1,12 @@
-# Second Brain
+# Ctrl+Forgot
+
+*For everything you forgot you wrote down.*
 
 An on-device assistant that turns a manager's scattered notes into a meeting brief, without uploading, copying or keeping them.
 
-![Second Brain preparing a brief for a 1:1](docs/screenshot.png)
+![Ctrl+Forgot preparing a brief for a 1:1](docs/screenshot.png)
 
-Second Brain reads the notes you allow it to see (text and Markdown files, Word documents, PDFs, screenshots and photos of handwriting) and prepares you for a meeting: what is still open, what was decided, what has changed since it was first written down, and what is unresolved. Every line is cited to the file, line and date it came from. A language model running locally through [Ollama](https://ollama.com) adds a short written summary, and each point in it is checked against the cited notes before it is shown.
+Ctrl+Forgot reads the notes you allow it to see (text and Markdown files, Word documents, PDFs, screenshots and photos of handwriting) and prepares you for a meeting: what is still open, what was decided, what has changed since it was first written down, and what is unresolved. Every line is cited to the file, line and date it came from. A language model running locally through [Ollama](https://ollama.com) adds a short written summary, and each point in it is checked against the cited notes before it is shown.
 
 It was built for the AI Studio hackathon brief *Second Brain for Managers*, whose one rule is that your knowledge stays yours: nothing leaves the device and no copy is kept.
 
@@ -31,7 +33,7 @@ It was built for the AI Studio hackathon brief *Second Brain for Managers*, whos
 ### Limitations
 
 - The guard is an in-process control over the Python standard library, not an operating-system sandbox. A production version should add OS-level isolation.
-- Ollama is a separate process. Second Brain only ever contacts it on loopback, but cannot constrain Ollama itself. Downloading a model needs the internet once.
+- Ollama is a separate process. Ctrl+Forgot only ever contacts it on loopback, but cannot constrain Ollama itself. Downloading a model needs the internet once.
 - While a session is open, note content is held in this process's memory and in the model's memory. Both are released when the session ends.
 - Passcodes control what the assistant may open; they do not encrypt files on disk.
 - Handwriting recognition can be wrong. Transcriptions are always shown next to the original image and marked as read from an image.
@@ -56,7 +58,7 @@ If several are installed, the smallest suitable model writes summaries and the m
 
 ```bash
 git clone <repository-url>
-cd second-brain
+cd ctrl-forgot
 ollama pull qwen3-vl:4b-instruct      # optional
 python run.py                          # macOS/Linux: python3 run.py
 ```
@@ -65,8 +67,8 @@ Open the address it prints (`http://127.0.0.1:8765`). By default it uses the not
 
 ### As a desktop app
 
-- **Windows:** double-click `Create desktop shortcut.bat` once, then use the *Second Brain* icon on the desktop. You can also double-click `Second Brain.pyw`.
-- **macOS:** double-click `Second Brain.command`. The first time, right-click it and choose *Open*.
+- **Windows:** double-click `Create desktop shortcut.bat` once, then use the *Ctrl+Forgot* icon on the desktop. You can also double-click `Ctrl+Forgot.pyw`.
+- **macOS:** double-click `Ctrl+Forgot.command`. The first time, right-click it and choose *Open*.
 
 The app opens in its own window. Closing the window ends the session and the process exits. Launching it again while it is running brings the existing window back.
 

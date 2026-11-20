@@ -1,4 +1,4 @@
-# Second Brain settings. Copy this file to settings.txt and edit it there
+# Ctrl+Forgot settings. Copy this file to settings.txt and edit it there
 # (settings.txt is ignored by Git). Lines starting with # are ignored.
 
 # Use your own notes folder instead of the sample notes:

@@ -38,7 +38,7 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/api/tags":
             return self._send({"models": [{"name": n, "details": {"parameter_size": MODELS[n]}} for n in MODELS] +
                                          [{"name": "gpt-oss:120b-cloud", "remote_host": "https://ollama.com"}]})
-        if self.path == "/api/ping":                     # pretends to be an older Second Brain
+        if self.path == "/api/ping":                     # pretends to be an older Ctrl+Forgot
             return self._send({"app": "second-brain", "version": "0.1.0"})
         if self.path == "/api/ps":
             return self._send({"models": [{"name": n} for n in sorted(LOADED)]})
