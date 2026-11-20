@@ -1,4 +1,4 @@
-"""A stand-in for Ollama, for tests only. Listens on 127.0.0.1 and gives canned replies."""
+"""Mock Ollama server for tests: listens on 127.0.0.1 and returns canned responses."""
 import json
 import sys
 import threading

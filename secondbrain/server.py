@@ -1,4 +1,4 @@
-"""A small web server that only this computer can reach (127.0.0.1)."""
+"""HTTP server and JSON API for the web UI, bound to 127.0.0.1."""
 from __future__ import annotations
 
 import json
@@ -18,7 +18,7 @@ STATIC = {"/": ("index.html", "text/html; charset=utf-8"),
           "/favicon.ico": ("icon.ico", "image/x-icon")}
 IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
               ".gif": "image/gif", ".bmp": "image/bmp"}
-# The page may only load things from this server: no fonts, scripts or trackers from elsewhere.
+# Same-origin only: no external scripts, fonts or images.
 CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'"
 
 
@@ -45,7 +45,7 @@ def make_handler(session, ledger):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")          # the browser keeps no copy either
+            self.send_header("Cache-Control", "no-store")          # no browser cache
             self.send_header("Content-Security-Policy", CSP)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
@@ -53,7 +53,7 @@ def make_handler(session, ledger):
             self.wfile.write(body)
 
         def _stream(self, events):
-            """Send events one line at a time as they happen (chunked, so the page sees each at once)."""
+            """Write events as newline-delimited JSON using chunked transfer encoding."""
             self.send_response(200)
             self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
             self.send_header("Transfer-Encoding", "chunked")
@@ -77,14 +77,14 @@ def make_handler(session, ledger):
                 self.wfile.write(b"0\r\n\r\n")
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                self.close_connection = True     # the page moved on; stop the model writing
+                self.close_connection = True     # client gone; closing stops generation
             finally:
                 close = getattr(events, "close", None)
                 if close:
                     close()
 
         def _local_only(self):
-            """Refuse requests that did not come from this app's own page."""
+            """Reject requests whose Host header is not loopback."""
             host = (self.headers.get("Host") or "").split(":")[0]
             if host not in ("127.0.0.1", "localhost"):
                 self._send(403, {"error": "this assistant only answers on this computer"})
@@ -112,7 +112,7 @@ def make_handler(session, ledger):
                 name, ctype = STATIC[url.path]
                 with open(os.path.join(WEB, name), "rb") as f:
                     return self._send(200, f.read(), ctype)
-            if url.path == "/api/ping":                  # lets a second double-click find this window
+            if url.path == "/api/ping":                  # used for single-instance detection
                 return self._send(200, {"app": "second-brain", "version": __version__})
             if url.path == "/api/state":
                 session.sync()
@@ -121,7 +121,7 @@ def make_handler(session, ledger):
                 doc = session.docs.get((q.get("id") or [""])[0])
                 if not doc:
                     return self._send(404, {"error": "I no longer have that note in memory."})
-                # (a note that failed to read still opens, so the reason can be shown)
+                # failed notes are returned too, with their error
                 out = doc.public()
                 out.update({"lines": doc.lines, "date_source": doc.date_source, "pages": len(doc.images or []),
                             "fingerprint": (doc.sha256 or "")[:16]})
@@ -130,7 +130,7 @@ def make_handler(session, ledger):
                 doc = session.docs.get((q.get("id") or [""])[0])
                 if not doc or doc.kind != "image":
                     return self._send(404, {"error": "not found"})
-                if doc.images:                       # a page of a scanned PDF, held in memory
+                if doc.images:                       # scanned PDF page, in memory
                     try:
                         img = doc.images[int((q.get("page") or ["1"])[0]) - 1]
                     except (ValueError, IndexError):
@@ -147,7 +147,7 @@ def make_handler(session, ledger):
         def do_POST(self):
             if not self._local_only():
                 return
-            if urlparse(self.path).path == "/api/bye":          # the window is closing (or reloading)
+            if urlparse(self.path).path == "/api/bye":          # close beacon from the page
                 origin = self.headers.get("Origin") or ""
                 if origin.split("://", 1)[-1] == self.headers.get("Host"):
                     life = getattr(self.server, "lifeline", None)
@@ -155,7 +155,7 @@ def make_handler(session, ledger):
                         life.bye()
                     return self._send(204, b"")
                 return self._send(403, {"error": "request did not come from the app"})
-            if self.headers.get("X-Second-Brain") != "1":      # other websites cannot set this header
+            if self.headers.get("X-Second-Brain") != "1":      # custom header blocks cross-site requests
                 return self._send(403, {"error": "request did not come from the app"})
             try:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -170,7 +170,7 @@ def make_handler(session, ledger):
                 if path == "/api/allow_all":
                     for u in session.units():
                         if body.get("on") and u in session.protected:
-                            continue                    # protected folders are opened one at a time, with the passcode
+                            continue                    # protected folders need a passcode
                         if (u in session.allowed) != bool(body.get("on")):
                             session.set_allowed(u, bool(body.get("on")))
                     return self._send(200, self._state())

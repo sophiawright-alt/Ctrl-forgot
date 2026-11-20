@@ -1,7 +1,7 @@
-"""Run with:  python3 -B tests/test_all.py
+"""Test suite: python -B tests/test_all.py
 
-Starts the real app against the sample notes and a stand-in local model, then
-checks the behaviour the brief asks for. No packages needed.
+Unit tests plus end-to-end tests that start the app against sample_notes and a
+mock Ollama server (tests/mock_ollama.py). No third-party packages required.
 """
 import datetime as dt
 import hashlib
@@ -708,7 +708,7 @@ class EndToEnd(unittest.TestCase):
     def test_8_lock_holds(self):
         _, r = call("/api/selftest", {})
         self.assertEqual(len(r["results"]), 6)
-        self.assertTrue(all(x["blocked"] and "Blocked by the one rule" in x["note"] for x in r["results"]))
+        self.assertTrue(all(x["blocked"] and "Blocked by the privacy guard" in x["note"] for x in r["results"]))
 
     def test_9_end_leaves_everything_as_it_was(self):
         _, r = call("/api/end", {})

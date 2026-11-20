@@ -1,17 +1,8 @@
-"""Making Second Brain behave like a desktop app.
+"""Desktop-app behaviour for --app mode.
 
-Double-click the desktop icon (or "Second Brain.pyw") and:
-
-  * the app starts with no terminal window;
-  * it opens in its own window (Edge or Chrome "app" mode: no tabs, no
-    address bar), or the normal browser if neither is installed;
-  * closing that window ends the session: everything in memory is
-    forgotten and the app quits;
-  * double-clicking again while it is running just opens the window again.
-
-Opening the window means starting another program, which the lock forbids.
-So it happens once, before the lock is switched on and before any note has
-been read. After that the app cannot start anything.
+Opens the UI in a browser app-mode window, reuses a running instance of the
+same version, and shuts down when the window closes. The window is launched
+before the guard is armed; afterwards the process cannot start programs.
 """
 from __future__ import annotations
 
@@ -24,14 +15,14 @@ import sys
 import threading
 import time
 
-# How long to wait before quitting. Overridable for the automated tests.
-BYE_GRACE = float(os.environ.get("SECOND_BRAIN_BYE_GRACE", "5"))         # a reload looks like a close at first
-IDLE_LIMIT = float(os.environ.get("SECOND_BRAIN_IDLE_LIMIT", "240"))      # window gone without saying so
-FIRST_VISIT = float(os.environ.get("SECOND_BRAIN_FIRST_VISIT", "120"))    # window never opened
+# Shutdown timings (seconds); overridable for tests.
+BYE_GRACE = float(os.environ.get("SECOND_BRAIN_BYE_GRACE", "5"))         # wait after a close beacon (reloads send one too)
+IDLE_LIMIT = float(os.environ.get("SECOND_BRAIN_IDLE_LIMIT", "240"))      # no requests at all
+FIRST_VISIT = float(os.environ.get("SECOND_BRAIN_FIRST_VISIT", "120"))    # window never connected
 
 
 def read_settings(path):
-    """settings.txt: 'name = value' lines; '#' starts a comment."""
+    """Parse settings.txt: `name = value` lines, `#` comments."""
     out = {}
     try:
         with open(path, encoding="utf-8-sig") as f:
@@ -47,11 +38,7 @@ def read_settings(path):
 
 
 def already_running(port):
-    """If this same version of Second Brain is already running on this port, return its address.
-
-    An older copy still running (say, started from a terminal before an update) is not
-    reused: the new copy starts on the next free port instead, so you get the new version.
-    """
+    """Address of a running instance of this version on `port`, else None."""
     from . import __version__
     try:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1.5)
@@ -84,7 +71,7 @@ def _candidates():
 
 
 def open_window(url):
-    """Open the app in its own window. Returns a short description of how."""
+    """Open the UI in an app-mode window if possible. Returns how it was opened."""
     if os.environ.get("SECOND_BRAIN_NO_WINDOW"):
         return "not opened (test mode)"
     flags = 0
@@ -105,7 +92,7 @@ def open_window(url):
 
 
 def tell(message, title="Second Brain"):
-    """Show a message to someone who has no terminal to read it in."""
+    """Show a message box (no console is available in --app mode)."""
     if os.environ.get("SECOND_BRAIN_NO_WINDOW"):
         print(message)
         return
@@ -124,12 +111,11 @@ def tell(message, title="Second Brain"):
 
 
 class Lifeline:
-    """Quits the app once its window has gone.
+    """Shuts the app down once its window is gone.
 
-    The page says goodbye when it closes. Because a reload says goodbye too,
-    the app waits a few seconds to see whether the page comes back. If the
-    window disappears without a word (a crash), the app quits after a few
-    minutes of silence.
+    The page sends a beacon on close. A reload also sends one, so shutdown waits
+    BYE_GRACE seconds for the page to return. Without any requests for IDLE_LIMIT
+    seconds (e.g. a crashed window), the app also exits.
     """
 
     def __init__(self, stop):

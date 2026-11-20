@@ -1,4 +1,4 @@
-/* Second Brain. One typeface, neutral greys, one blue. System fonts only, so it works offline. */
+/* Second Brain UI. System fonts only (no external resources). */
 :root {
   --bg: #f6f7f9; --surface: #ffffff; --text: #18212f; --muted: #627084; --line: #e2e6eb;
   --blue: #1f4fbf; --blue-soft: #eef3fd; --green: #17794a; --red: #b3261e; --amber: #8a5a00; --mark: #fff2b3;
@@ -159,7 +159,7 @@ table.tests .note { color: var(--muted); font-size: 12.5px; display: block; }
 .check code { font: 12.5px var(--mono); background: var(--bg); padding: 1px 5px; border-radius: 3px; color: var(--text); }
 .big { font-size: 16px; font-weight: 600; margin: 16px 0 6px; }
 
-/* a written answer still arriving: unchecked, so it looks provisional */
+/* streaming draft (unverified) */
 .card.ai.drafting { border-left-color: #9aa5b4; }
 .drafting .draft { color: #3d4859; }
 .drafting .draft > :last-child::after, .drafting .draft li:last-child::after { content: ""; display: inline-block; width: 7px; height: 1em;

@@ -1,22 +1,12 @@
-"""Reading the text out of a PDF, with nothing but Python itself.
+"""Dependency-free PDF text extraction from in-memory bytes.
 
-Everything happens on the bytes already in memory: nothing is unpacked,
-converted or cached on disk, and no other program is started (the lock in
-guard.py would refuse both anyway).
+Supports Flate, ASCIIHex and ASCII85 streams (with PNG predictors), object
+streams, ToUnicode CMaps, WinAnsi encodings with /Differences, and form
+XObjects. Text is reconstructed into lines from the text matrix, with
+"[page N]" markers between pages.
 
-What it handles: the PDFs people actually have lying around, as saved from
-Word, Google Docs, browsers ("Print to PDF") and most report tools. That
-means compressed streams, compressed object streams, fonts with a
-character map (ToUnicode), standard Western encodings, and text inside
-form objects.
-
-What it does not do: encrypted PDFs (it says so), and scanned PDFs, which
-have no text at all. For those, `extract` returns the page images so the
-local vision model can read them like a photo.
-
-The output is plain text, one line per line on the page, with a
-"[page N]" line where each new page starts, so citations can point at a
-page.
+Encrypted documents raise PDFError("encrypted"). Scanned documents (no text
+layer) return their page images for OCR instead.
 """
 from __future__ import annotations
 
@@ -279,7 +269,7 @@ class Document:
                 pairs.append((a, b))
             for objnum, off in pairs:
                 if objnum in self.objs:
-                    continue                     # a definition outside wins
+                    continue                     # direct definitions take precedence
                 try:
                     self.objs[objnum] = Lexer(data, int(first) + off).value()
                 except (IndexError, ValueError):
@@ -328,7 +318,7 @@ class Document:
             elif f in ("ASCII85Decode", "A85"):
                 data = _a85(data)
             elif f in ("DCTDecode", "DCT", "JPXDecode"):
-                break                            # an image: leave as is
+                break                            # image data: leave encoded
             else:
                 raise PDFError("unsupported compression %s" % f)
         self._decoded[num] = data
@@ -371,7 +361,7 @@ class Document:
 
         if isinstance(root, dict) and "Pages" in root:
             walk(root["Pages"], {}, 0)
-        if not out:                              # damaged file: take every page object we can find
+        if not out:                              # damaged page tree: collect page objects directly
             for num in sorted(self.objs):
                 v = self.objs[num]
                 if isinstance(v, dict) and v.get("Type") == "Page":
@@ -466,7 +456,7 @@ def _a85(data):
 
 
 # ---------------------------------------------------------------------------
-# Fonts: turning the bytes in a page into letters
+# Fonts and encodings
 # ---------------------------------------------------------------------------
 _GLYPHS = {
     "space": " ", "exclam": "!", "quotedbl": '"', "numbersign": "#", "dollar": "$", "percent": "%",
@@ -645,7 +635,7 @@ class Font:
                     i += n
             elif self.cid:
                 code = int.from_bytes(raw[i:i + 2], "big")
-                out.append(("", code))           # no map: cannot know the letter
+                out.append(("", code))           # no ToUnicode map: unknown glyph
                 i += 2
             else:
                 code = raw[i]
@@ -666,13 +656,13 @@ def _latin(code):
 
 
 # ---------------------------------------------------------------------------
-# Page content: where the text goes
+# Content streams
 # ---------------------------------------------------------------------------
 class _Text:
     def __init__(self):
         self.lines, self.cur = [], []
         self.last_y = None
-        self.end_x = None                        # where the last shown text ended
+        self.end_x = None                        # x position after the last text run
         self.seen_text = False
 
     def newline(self):
@@ -688,12 +678,12 @@ class _Text:
         if self.last_y is not None and abs(y - self.last_y) > max(1.0, 0.45 * size):
             self.newline()
             if abs(y - self.last_y) > 1.9 * size and self.lines and self.lines[-1]:
-                self.lines.append("")            # a gap between paragraphs
+                self.lines.append("")            # paragraph gap
         elif self.end_x is not None and self.cur:
             gap = x0 - self.end_x
             if gap > 0.18 * size and not self.cur[-1].endswith(" ") and not s.startswith(" "):
                 self.cur.append(" ")
-            elif gap < -3 * size:                # jumped back left on the same line: new column
+            elif gap < -3 * size:                # large leftward jump: new column
                 self.newline()
         self.cur.append(s)
         self.last_y = y
@@ -828,7 +818,7 @@ def _run(doc, data, resources, out, images, depth=0):
                         ctm = saved
                     elif xo.get("Subtype") == "Image" and images is not None:
                         images.append(ref.num)
-            elif op == "BI":                     # inline image: skip its binary data
+            elif op == "BI":                     # skip inline image data
                 j = data.find(b"ID", lex.i)
                 k = data.find(b"EI", j + 2) if j >= 0 else -1
                 while k > 0 and not (data[k - 1:k] in (b" ", b"\n", b"\r") and
@@ -841,7 +831,7 @@ def _run(doc, data, resources, out, images, depth=0):
 
 
 # ---------------------------------------------------------------------------
-# Scanned pages: hand the pictures to the vision model
+# Scanned documents
 # ---------------------------------------------------------------------------
 def _png(width, height, colors, pixels):
     def chunk(kind, body):
@@ -858,7 +848,7 @@ def _image_bytes(doc, num):
     info = doc.objs.get(num) or {}
     w, h = int(doc.get(info.get("Width"), 0)), int(doc.get(info.get("Height"), 0))
     if w < 300 or h < 300:
-        return None                              # logos and icons, not pages
+        return None                              # skip small images (logos, icons)
     filters = doc.get(info.get("Filter"), [])
     filters = filters if isinstance(filters, list) else [filters]
     filters = [str(doc.get(x)) for x in filters]
@@ -891,10 +881,8 @@ def _image_bytes(doc, num):
 def extract(data):
     """Return (text, page_images).
 
-    `text` is the PDF's text with "[page N]" lines between pages. If the PDF
-    is a scan (no text at all), `page_images` holds up to MAX_SCAN_IMAGES
-    page pictures (JPEG or PNG bytes) for the vision model.
-    Raises PDFError("encrypted") for locked PDFs.
+    `page_images` (JPEG or PNG bytes, at most MAX_SCAN_IMAGES) is only filled for
+    scanned documents with little or no text layer.
     """
     doc = Document(data)
     pages = doc.pages()
@@ -916,7 +904,7 @@ def extract(data):
     text = "\n".join(all_lines)
     letters = len(re.sub(r"\s|\[page \d+\]", "", text))
     images = []
-    if letters < 20 * len(pages):               # little or no real text: probably a scan
+    if letters < 20 * len(pages):               # little or no text layer: likely a scan
         seen = set()
         for num in image_refs:
             if num in seen:

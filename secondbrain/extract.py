@@ -1,10 +1,8 @@
-"""Pulling structure out of messy notes without a model.
+"""Rule-based extraction from informal notes.
 
-Action items, decisions, open questions, who owes what, what looks done, and
-where two notes disagree. These are plain pattern rules, so they are instant,
-they work with no model installed, and every item points at one exact line of
-one note. The local model (brief.py) adds a written summary on top; it does
-not replace these.
+Finds action items (with owner and due date), decisions, open questions,
+completion reports and values that changed between notes. Deterministic and
+model-free; every result maps to a single line.
 """
 from __future__ import annotations
 
@@ -24,7 +22,7 @@ _SELF = re.compile(r"\b(i need to|need to|remember to|don'?t forget(?: to)?|remi
                    r"i said i'?d|i said i would|i promised|still haven'?t)\b", re.I)
 _DONE_WORDS = r"done|sent|completed?|sorted|finished|delivered|received|shipped|signed|booked|closed|submitted"
 _DONE = re.compile(r"(✓|✔|~~|\(done\)|\b(?:%s)\b\s*[.!]?\s*$|^\s*(?:[-*+]\s*)?done\b)" % _DONE_WORDS, re.I)
-# "not done", "haven't signed off", "still waiting": the opposite of done or decided
+# Negated completion/decision phrases ("not done", "haven't signed off").
 _NEGATED = re.compile(r"\b(not|never|no|n't|nt|still waiting|not yet|yet to)\b[\w\s']{0,14}?\b(%s|signed[- ]off|sign[- ]off|"
                       r"approved|agreed|decided|confirmed)\b|\b(haven'?t|hasn'?t|didn'?t|wasn'?t|weren'?t|isn'?t|aren'?t)\b"
                       % "done|sent|completed?|sorted|finished|delivered|received|shipped|signed|booked|closed|submitted",
@@ -67,7 +65,7 @@ def _clean(text):
 
 
 def classify_line(line, ref_date):
-    """Return a dict describing what kind of thing this line is, or None."""
+    """Classify a line as action/decision/question; None if it is none of these."""
     raw = line.rstrip()
     if not raw.strip() or raw.lstrip().startswith("#"):
         return None
@@ -127,7 +125,7 @@ def classify_line(line, ref_date):
 
 
 def values(text, ref_date=None):
-    """Numbers that matter in a line: money, percentages, counts, dates."""
+    """Money, percentages, counts and dates mentioned in a line."""
     out = []
     for m in _MONEY.finditer(text):
         n = float(m.group(1).replace(",", ""))
@@ -148,10 +146,9 @@ def content_stems(text, ignore=()):
 
 
 def find_changes(lines, ignore=(), limit=4):
-    """Where an older note and a newer note give different numbers for the same thing.
+    """Pairs of lines where an older and a newer note give different values for the same thing.
 
-    `lines` is [(ref, text, date)] where ref is anything the caller wants back.
-    Returns [(older_ref, newer_ref, kind, old_value, new_value)].
+    `lines` is [(ref, text, date)]. Returns [(older_ref, newer_ref, kind, old_value, new_value)].
     """
     facts = []
     for ref, text, date in lines:
@@ -171,7 +168,7 @@ def find_changes(lines, ignore=(), limit=4):
                     continue
                 new = [v for v in newer[2] if v[0] == kind]
                 if new and kind != "date" and not (0.2 <= (new[0][1] or 1) / (old or 1) <= 5):
-                    continue                     # too different to be the same quantity revised
+                    continue                     # implausible as a revision of the same quantity
                 if new and all(v[1] != old for v in new) and not any(
                         v[0] == kind and v[1] == new[0][1] for v in older[2]):
                     found.append((len(shared), older[0], newer[0], kind.split(":")[0], old_text, new[0][2]))
@@ -199,7 +196,7 @@ _VERB_STEMS = set(stems("send sent do done complete completed sort sorted finish
 
 
 def resolves(action_text, later_text, owner=None):
-    """Does a later line look like it reports this action as done?"""
+    """Whether `later_text` reports `action_text` as done."""
     if not _DONE_ANY.search(later_text) or _NEGATED.search(later_text):
         return False
     a = content_stems(action_text) - _MONTH_STEMS - _VERB_STEMS
@@ -211,7 +208,7 @@ def resolves(action_text, later_text, owner=None):
 
 
 def find_people(docs, limit=8):
-    """Names that keep turning up in the notes (for the suggestion chips)."""
+    """Recurring person names (attendee lists, owners, 1:1s, @mentions)."""
     candidates = {}
     text_all = []
     for doc in docs:
@@ -226,7 +223,7 @@ def find_people(docs, limit=8):
                 for part in re.split(r"[,/&+;]|\band\b", m.group(1)):
                     words = part.strip().split()
                     inside = re.findall(r"\(([A-Z][a-z]{1,14})\)", part)
-                    if inside:                       # "Helix account manager (Rina)": the person is Rina
+                    if inside:                       # "Acme account manager (Rina)" -> Rina
                         first = inside[0]
                     elif len(words) <= 2:            # "Tom" or "Mei Lin"
                         first = words[0].strip("()@.") if words else ""
@@ -242,7 +239,7 @@ def find_people(docs, limit=8):
                 if n not in NOT_NAMES:
                     candidates[n] = candidates.get(n, 0) + 2
             m = _OWNER_TO.match(line)
-            # "Tom to send…" is a person; "Helix will hold the price" could be a company
+            # only "Name to <verb>" implies a person ("X will ..." may be a company)
             if m and re.match(r"\s*(?:[-*+>•]\s*)?@?%s\s+to\s" % m.group("owner"), line) and \
                     m.group("owner") not in NOT_NAMES and m.group("owner") not in ("I", "Me"):
                 candidates[m.group("owner")] = candidates.get(m.group("owner"), 0) + 2
@@ -250,7 +247,7 @@ def find_people(docs, limit=8):
     scored = []
     for name, seed in candidates.items():
         if seed <= 0:
-            continue                             # a word in a file name alone is not a person
+            continue                             # file-name words alone are not evidence
         count = len(re.findall(r"\b%s\b" % re.escape(name), blob))
         scored.append((seed + count, name))
     scored.sort(reverse=True)
@@ -258,7 +255,7 @@ def find_people(docs, limit=8):
 
 
 def find_topics(docs, people, limit=5):
-    """Capitalised words used mid-sentence across several notes: project and vendor names."""
+    """Recurring capitalised words across notes: project and vendor names."""
     counts, in_docs = {}, {}
     skip = NOT_NAMES | set(people)
     for doc in docs:

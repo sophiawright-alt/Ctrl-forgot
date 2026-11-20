@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
-"""Start Second Brain.
+"""Command-line entry point.
 
-    python3 run.py                       # uses the sample notes
-    python3 run.py --notes ~/my-notes    # point it at another folder
-    python3 run.py --app                 # open in its own window; closing it quits
+    python run.py [--notes DIR] [--app] [--port N] [--ollama-port N] [--today YYYY-MM-DD]
 
-Or double-click "Second Brain.pyw" (Windows) / "Second Brain.command" (Mac),
-which run it with --app and no terminal. Settings for those go in settings.txt.
-
-Otherwise open the address it prints. Needs Python 3.8+ and nothing else. For the
-written summaries and for reading handwriting it uses a model running on this
-machine through Ollama (see README).
+Defaults can be set in settings.txt (see settings.example.txt). With --app the UI
+opens in its own window and the process exits when the window is closed.
 """
 import argparse
 import datetime
@@ -21,7 +15,7 @@ import threading
 if sys.version_info < (3, 8):
     sys.exit("Second Brain needs Python 3.8 or newer. You have %s." % sys.version.split()[0])
 
-sys.dont_write_bytecode = True               # not even compiled-code caches get written
+sys.dont_write_bytecode = True               # no .pyc files
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
@@ -50,13 +44,13 @@ def main():
 
     if args.app:
         running = desktop.already_running(args.port)
-        if running:                                  # double-clicked again: just show the window
+        if running:                                  # reuse the running instance
             desktop.open_window(running)
             return
 
     notes = os.path.expanduser(args.notes)
     if not os.path.isabs(notes) and not os.path.isdir(notes):
-        notes = os.path.join(HERE, notes)            # "notes = demo_notes" means the folder next to run.py
+        notes = os.path.join(HERE, notes)            # relative to the app folder
     notes = os.path.abspath(notes)
     if not os.path.isdir(notes):
         message = "Notes folder not found:\n%s\n\nCheck the 'notes' line in settings.txt." % notes
@@ -73,12 +67,12 @@ def main():
     httpd, port = server.serve(session, ledger, args.port)
     url = "http://127.0.0.1:%d" % port
     if args.app:
-        # The only program this app ever starts: its own window, before the lock goes on.
+        # Launch the window before the guard is armed; no process can be started afterwards.
         how = desktop.open_window(url)
         httpd.lifeline = desktop.Lifeline(lambda: threading.Thread(target=httpd.shutdown, daemon=True).start())
 
-    # From this line on, the process cannot write to disk, reach the network,
-    # start other programs, or read notes the user has not switched on.
+    # From here on: no disk writes, no non-loopback network, no new processes,
+    # and no reads outside approved folders.
     guard.arm(notes, exempt_dirs=[os.path.join(HERE, "web"), os.path.join(HERE, "secondbrain")],
               is_allowed=session.is_allowed, on_event=ledger.record)
 

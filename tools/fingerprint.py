@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""An independent check that has nothing to do with the assistant.
+"""Print a single SHA-256 fingerprint for a folder (paths and contents).
 
-    python3 tools/fingerprint.py path/to/notes
+    python tools/fingerprint.py path/to/notes
 
-Prints one fingerprint for the whole folder (every file's path, size and
-contents). Run it before a session and again after. If the two lines match,
-not one byte in the folder was added, changed or removed.
+Independent of the app: run before and after a session to confirm nothing
+was added, changed or removed.
 """
 import hashlib
 import os

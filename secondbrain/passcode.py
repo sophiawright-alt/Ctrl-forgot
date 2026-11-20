@@ -1,12 +1,8 @@
 """Passcodes for protected folders.
 
-A folder listed under `protect` in settings.txt stays off until someone types
-the passcode. This is a lock on what the assistant may open, not encryption:
-the files themselves are ordinary files on disk.
-
-The passcode in settings.txt can be written plainly (`passcode = 4821`) or,
-better, as a one-way hash made by `python tools/passcode.py`, so nobody can
-read it from the file.
+Stored in settings.txt either in plain text or as a PBKDF2-SHA256 hash
+(see tools/passcode.py). This restricts what the assistant may open; it does
+not encrypt files on disk.
 """
 from __future__ import annotations
 
@@ -18,14 +14,14 @@ ITERATIONS = 200_000
 
 
 def make(passcode):
-    """A one-way, salted hash of a passcode, for settings.txt."""
+    """Salted PBKDF2-SHA256 hash string for settings.txt."""
     salt = os.urandom(16)
     digest = hashlib.pbkdf2_hmac("sha256", passcode.encode("utf-8"), salt, ITERATIONS)
     return "pbkdf2:sha256:%d:%s:%s" % (ITERATIONS, salt.hex(), digest.hex())
 
 
 def check(stored, given):
-    """Does `given` match the passcode in settings.txt (hashed or plain)?"""
+    """Constant-time comparison against a plain or hashed stored passcode."""
     if not stored or given is None:
         return False
     given = str(given)

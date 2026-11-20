@@ -1,13 +1,7 @@
-"""The receipt.
+"""In-memory activity log shown to the user as the session receipt.
 
-A running, in-memory record of everything the assistant touched this session:
-which notes it read, each time it spoke to the model on this machine, and
-every attempt the lock stopped. Entries about reads and connections come from
-the lock itself (guard.py), not from the code doing the reading, so the app
-cannot forget to mention something.
-
-Like everything else here it lives only in memory and is gone when the
-session ends.
+Read and connection events come from the guard's audit hook, not from the
+calling code, so they cannot be omitted. Cleared when the session ends.
 """
 from __future__ import annotations
 
@@ -38,11 +32,11 @@ class Ledger:
                 path = detail.get("path", "")
                 n = self.files_read.get(path, 0)
                 self.files_read[path] = n + 1
-                if n:                   # only the first read of a file is news
+                if n:                   # log first read only
                     return
             elif kind == "local_connection":
                 self.local_connections += 1
-                return                  # counted; model calls are logged separately
+                return                  # counted only; model calls are logged separately
             elif kind == "model":
                 self.model_calls += 1
             elif kind == "blocked":
@@ -70,8 +64,7 @@ class Ledger:
                 "model_calls": self.model_calls,
                 "local_connections": self.local_connections,
                 "blocked": self.blocked,
-                # These two are zero by construction: the lock raises before
-                # either can happen. They are shown so the user sees the claim.
+                # Always zero: the guard raises before either can happen. Reported for transparency.
                 "sent_off_device": 0,
                 "written_to_disk": 0,
                 "events": events,

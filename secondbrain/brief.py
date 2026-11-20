@@ -1,14 +1,13 @@
-"""The two things the assistant does: prepare you for a meeting, and find an answer.
+"""Meeting briefs and question answering over the in-memory index.
 
-Each has two layers:
+Two layers:
+  1. Rule-based extraction (actions, decisions, questions, changes), where every
+     item is cited to a file, line and date.
+  2. An optional summary from the local model, restricted to the numbered
+     excerpts; each point is verified against its sources (`_ground`) and
+     dropped if unsupported.
 
-  1. An instant layer built from pattern rules and search. Every item is a
-     real line from a real note, with its file, line number and date.
-  2. A written summary from the local model, which is only allowed to use the
-     same numbered excerpts, and whose every point is checked back against
-     them before you see it (`_ground`). Points it cannot back up are dropped.
-
-Nothing is cached between requests: the server recomputes from memory each time.
+Results are computed per request and not cached.
 """
 from __future__ import annotations
 
@@ -52,13 +51,12 @@ def _retrieve(session, query, qv, k=12):
             elif sim >= 0.5:
                 hits[cid] = {"chunk": idx.by_id[cid], "matched": set(), "coverage": 0.0, "sim": sim,
                              "fused": 1.0 / (60 + rank), "strong": False}
-    # Notes that contain the words you actually used always come first;
-    # meaning-based matches fill in behind them.
+    # Strong lexical matches rank ahead of embedding-only matches.
     return sorted(hits.values(), key=lambda h: (not h["strong"], -h["fused"]))
 
 
 class _Evidence:
-    """Numbers the excerpts an answer relies on, so everything can cite [n]."""
+    """Assigns citation numbers to the chunks an answer uses."""
 
     def __init__(self, today):
         self.today, self.items, self._n = today, [], {}
@@ -79,7 +77,7 @@ class _Evidence:
 
 
 def _honesty(session, extra=()):
-    """Plain statements about what the assistant could not see or is unsure of."""
+    """Caveats about coverage: hidden folders, unread images, pending work."""
     notes = list(extra)
     off = [u for u in session.units() if u not in session.allowed]
     if off:
@@ -126,8 +124,7 @@ def prep(session, query):
             return result
 
         hits = _retrieve(session, query, qv)
-        # For a short subject like a name, "similar in meaning" is not evidence: "Kofi" must
-        # actually appear. Meaning-only matches count only for longer, descriptive requests.
+        # Embedding-only matches are ignored for short queries (e.g. a name), which must match lexically.
         relevant = [h for h in hits if h["coverage"] >= 0.5 or ((h["sim"] or 0) >= 0.6 and len(q) >= 3)]
         if not relevant:
             missing = ", ".join(_as_typed(query, sorted(q)))
@@ -135,7 +132,7 @@ def prep(session, query):
             return result
         result["found"] = True
 
-        # Lines worth showing: in a note that is about the subject, or naming it.
+        # Lines from notes about the subject, or lines that name it.
         lines = []                                   # (chunk, offset, text, classified)
         for h in relevant:
             c = h["chunk"]
@@ -144,7 +141,7 @@ def prep(session, query):
                 if whole or terms & set(stems(line)):
                     lines.append((c, off, line, extract.classify_line(line, c.date)))
 
-        # What changed between older and newer notes.
+        # Values that changed between older and newer notes.
         facts = [((c, off, line), line, c.date) for c, off, line, _ in lines]
         superseded, moved = {}, set()
         names = set(stems(" ".join(extract.find_people(session.docs.values()))))
@@ -156,7 +153,7 @@ def prep(session, query):
             if kind == "date":
                 moved.add((old[0].id, old[1]))
 
-        # Every dated line anywhere that could report an action as done.
+        # Candidate completion reports for open actions.
         reports = [(c, off, line) for c in idx.chunks for off, line in enumerate(c.lines)
                    if extract._DONE_ANY.search(line)]
 
@@ -174,16 +171,16 @@ def prep(session, query):
                 later = None
                 for rc, roff, rline in reports:
                     ticked = "✓" in rline or "✔" in rline or "[x]" in rline.lower()
-                    # a later note, or a tick: the same day's "get it signed" is a plan, not a report
+                    # Must be later, or ticked on the same day (a same-day plan is not a report).
                     if (rc.id, roff) != (c.id, off) and (rc.date > c.date or (ticked and rc.date == c.date)) and extract.resolves(
                             info["text"], rline + " " + rc.doc.title + " " + (rc.heading or ""), info.get("owner")):
-                        # the closest match wins; the newest only breaks a tie
+                        # best overlap wins; recency breaks ties
                         fit = len(extract.content_stems(info["text"]) & extract.content_stems(
                             rline + " " + rc.doc.title + " " + (rc.heading or "")))
                         if later is None or (fit, rc.date) > (later[3], later[0].date):
                             later = (rc, roff, rline, fit)
                 if not later and (c.id, off) in moved:
-                    it["resolved_by"] = superseded[(c.id, off)]      # a newer note overtakes this one
+                    it["resolved_by"] = superseded[(c.id, off)]      # superseded by a newer value
                     result["probably_done"].append(it)
                     continue
                 if later:
@@ -211,7 +208,7 @@ def prep(session, query):
         for h in newest[:3]:
             c = h["chunk"]
             result["recent"].append(_item(ev, c, 0, _snippet(c, terms), why=_why(h)))
-        for h in relevant[:10]:                      # make sure the best matches are citable
+        for h in relevant[:10]:                      # ensure top matches are citable
             ev.cite(h["chunk"], _why(h))
 
         docs = {e["doc"] for e in ev.items}
@@ -231,7 +228,7 @@ def prep(session, query):
 
 
 def _as_typed(query, stem_list):
-    """Show the user's own words back to them, not our internal word stems."""
+    """Map query stems back to the words the user typed."""
     from .index import words, stem, STOPWORDS
     back = {}
     for w in words(query):
@@ -242,7 +239,7 @@ def _as_typed(query, stem_list):
 
 def _why(h):
     if h["matched"]:
-        return "mentions " + ", ".join(sorted(h["matched"]))   # word stems, e.g. "decid" for decided/decision
+        return "mentions " + ", ".join(sorted(h["matched"]))   # stems
     return "similar in meaning to what you asked (no matching words)"
 
 
@@ -277,7 +274,7 @@ def ask(session, question):
         for h in hits[:3]:
             union |= h["matched"]
         cov, missing = idx.coverage(question, union)
-        # for a short question, "similar in meaning" alone is not evidence (as in meeting prep)
+        # as in prep(): embedding similarity alone does not count for short queries
         top_sim = max([h["sim"] or 0 for h in hits] or [0]) if len(q) >= 3 else 0
         best_single = max([h["coverage"] for h in hits] or [0])
         if cov >= 0.75 and best_single >= 0.5:
@@ -293,25 +290,24 @@ def ask(session, question):
         keep = [h for h in hits if h["coverage"] >= 0.34 or ((h["sim"] or 0) >= 0.5 and len(q) >= 3)][:6]
         asked = set(q)
 
-        def said(line):                              # which of the asked-about words a line covers
+        def said(line):                              # query stems covered by `line`
             got = set(stems(line))
             return {t for t in asked if t in got} | {typo[t] for t in typo if t in got}
 
         need = max(1, (len(asked) + 1) // 2)
         facts = []
-        # A question that names something ("the Corvid pilot") is only answered by lines about
-        # that thing. Corvid in one note and "pilot start" in another is not an answer.
+        # A question naming an entity is only answered by lines about that entity; the name in
+        # one note and the other terms in another is not an answer.
         names = {t: w for t, w in _names_in(session, question, asked).items() if t in idx.df}
-        # "decide", "say", "plan"… are how you ask, not what you ask about: an answer need not repeat them
+        # Question verbs ("decide", "say", ...) need not appear in an answering line.
         others = asked - set(names) - _ASKING_WORDS
         if names:
             keep = []
-            # Words the notes use as names (Helix, Corvid, Priya…). A line naming a different one
-            # is about that, not about what you asked.
+            # Other entity names: a line naming a different entity is not about this one.
             others_named = _name_words(session) - set(names)
             weak = getattr(idx, "_weak", set())
 
-            ranked = asked - set(names)               # for ranking, every word counts
+            ranked = asked - set(names)               # ranking uses all query terms
 
             def weigh(got):
                 score, direct = 0.0, ranked & got
@@ -325,11 +321,10 @@ def ask(session, question):
             name_lines = []
             in_doc, main_subject = {}, {}
             for c in idx.chunks:
-                if c.doc.id not in in_doc:            # does this note mention it anywhere?
+                if c.doc.id not in in_doc:            # entity mentioned anywhere in the note?
                     words = stems(c.doc.title + "\n" + "\n".join(c.doc.lines))
                     in_doc[c.doc.id] = set(words)
-                    # Is it what the note is mainly about? A note that names Quillon once in
-                    # passing, but Halden three times, is about Halden.
+                    # The note's main subject: the entity mentioned at least as often as any other.
                     counts = {}
                     for w in words:
                         if w in names or w in others_named:
@@ -345,15 +340,15 @@ def ask(session, question):
                     if not line.strip() or line.lstrip().startswith("#"):
                         continue
                     got = set(stems(line)) | said(line)
-                    full = others <= said(line)            # every other thing you asked about is in this line
+                    full = others <= said(line)            # all remaining query terms present
                     if all(n in got for n in names):
-                        bonus = 0.3                        # names it outright
+                        bonus = 0.3                        # explicit mention
                     elif got & others_named:
-                        continue                           # "Helix pilot start…" is not about Corvid
+                        continue                           # about a different entity
                     elif whole_note or (full and (main_subject[c.doc.id] or all(
                             any(n in line_stems[j] for j in range(max(0, off - 1), min(len(c.lines), off + 2)))
                             for n in names))):
-                        bonus = 0.0                        # in a note (or a passage) about it
+                        bonus = 0.0                        # implicit: within a note or passage about the entity
                     else:
                         continue
                     name_lines.append((weigh(got), bonus, full, c.date, c, off, line))
@@ -363,7 +358,7 @@ def ask(session, question):
             for _, _, _, _, c, off, line in shown[:5]:
                 result["snippets"].append(_item(ev, c, off, extract._clean(line),
                                                 why="about " + ", ".join(names.values())))
-            # only lines that answer the whole question can show that the notes disagree
+            # only fully matching lines are compared for changes
             facts = [((c, off, line), line, c.date) for _, _, full, _, c, off, line in together if full]
             together = [x for x in together if x[2]] or together
             covered = set()
@@ -384,7 +379,7 @@ def ask(session, question):
                              if l.strip() and not l.lstrip().startswith("#")), reverse=True)
             picked = [s for s in scored if s[0] >= need][:2]
             if not picked and (h["coverage"] >= 0.6 or not h["matched"]):
-                picked = scored[:1]              # the block as a whole fits, even if no single line does
+                picked = scored[:1]              # chunk matches as a whole
             if not picked:
                 continue
             for _, _, off, line in sorted(picked, key=lambda s: s[2]):
@@ -437,7 +432,7 @@ _ASKING_WORDS = set(stems("decide decided decision say said says tell told think
 
 
 def _name_words(session):
-    """Stems of words the notes write as names: mostly capitalised, in the middle of a line."""
+    """Stems of words the notes predominantly capitalise mid-line (names)."""
     from .index import stem
     cap, low = {}, {}
     for d in session.docs.values():
@@ -451,10 +446,10 @@ def _name_words(session):
 
 
 def _names_in(session, question, asked):
-    """Names in a question (a project, vendor or person, like Corvid or Priya): {stem: word}.
+    """Named entities in a question as {stem: word}.
 
-    A word counts if it is capitalised in the middle of the question, or, when
-    typed in lower case, if the notes mostly write it with a capital letter.
+    A word qualifies if it is capitalised mid-question, or if the notes mostly
+    capitalise it.
     """
     from .index import stem
     out = {}
@@ -483,18 +478,12 @@ def _d(iso):
 
 
 # ---- the local model's written layer ---------------------------------------
-# How much of your notes goes to the model. Less text means it starts writing sooner;
-# these are enough for a meeting brief because the best matches come first.
+# Context sent to the model per request (excerpts are ranked, so the best come first).
 PREP_EXCERPTS, ASK_EXCERPTS, EXCERPT_CHARS = 10, 6, 450
 
 
 def _focus(text, terms, width):
-    """The part of a note most worth showing the model, at most `width` characters.
-
-    Short notes go whole. Longer ones (Word and PDF files often have long
-    paragraphs) are cut around the lines that mention what you asked about,
-    so the line that answers the question is never the part left out.
-    """
+    """Up to `width` characters of `text`, centred on the lines matching `terms`."""
     if len(text) <= width:
         return text
     lines = text.split("\n")
@@ -503,7 +492,7 @@ def _focus(text, terms, width):
         return text[:width].rstrip() + " …"
     best = max(range(len(lines)), key=lambda i: (scores[i], -i))
     line = lines[best]
-    if len(line) >= width:                       # one long paragraph: a window around the matching words
+    if len(line) >= width:                       # long single line: window around the matches
         words = line.split(" ")
         hits = [i for i, w in enumerate(words) if terms & set(stems(w))] or [0]
         centre = hits[len(hits) // 2]
@@ -520,7 +509,7 @@ def _focus(text, terms, width):
     keep, size = {best}, len(line)
     lo, hi = best, best
     while size < width and (lo > 0 or hi < len(lines) - 1):
-        # grow towards whichever neighbour also mentions the subject, else downwards first
+        # expand towards the neighbour that also matches, else downwards
         up = scores[lo - 1] if lo > 0 else -1
         down = scores[hi + 1] if hi < len(lines) - 1 else -1
         i = hi + 1 if down >= up else lo - 1
@@ -545,11 +534,11 @@ _NUM = re.compile(r"\d[\d,]*(?:\.\d+)?")
 
 
 def _ground(points, evidence, limit):
-    """Keep only points the cited excerpts actually support. Returns (kept, dropped).
+    """Keep model points supported by their cited excerpts. Returns (kept, dropped).
 
-    A point is removed if it cites nothing, if too few of its words appear in
-    the notes it cites, or if it contains a number that appears in none of
-    the notes at all (an invented figure is the most dangerous mistake).
+    A point is dropped if it has no resolvable source, if too few of its content
+    words occur in the cited excerpts, or if it contains a number that occurs in
+    none of the excerpts.
     """
     by_n = {e["n"]: e for e in evidence}
 
@@ -560,9 +549,9 @@ def _ground(points, evidence, limit):
     for p in _as_points(points):
         text, sources = p["text"], [n for n in dict.fromkeys(p["sources"]) if n in by_n]
         if text and not sources:
-            sources = _find_sources(text, evidence)   # the model forgot to say: look for itself
+            sources = _find_sources(text, evidence)   # infer missing citations
         if not text or not sources:
-            dropped += 1                           # no source, no say
+            dropped += 1                           # unsupported
             continue
         cited = flat(by_n[n] for n in sources)
         have = set(stems(cited, keep_stop=True))
@@ -585,7 +574,7 @@ def _ground(points, evidence, limit):
 
 
 def _as_points(items):
-    """The model's points, whatever shape a small model wrote them in."""
+    """Normalise model output points to [{'text', 'sources'}]."""
     if isinstance(items, (str, dict)):
         items = [items]
     out = []
@@ -600,8 +589,7 @@ def _as_points(items):
 
 
 def _find_sources(text, evidence):
-    """Which excerpts a point came from, when the model did not say: the one or two that
-    contain most of its words (and all of its numbers)."""
+    """Infer citations for an unsourced point: excerpts containing most of its words and all its numbers."""
     want = extract.content_stems(text)
     numbers = [n.replace(",", "").rstrip(".") for n in _NUM.findall(text)]
     scored = []
@@ -616,7 +604,7 @@ def _find_sources(text, evidence):
 
 
 def _numbers(v):
-    """Source numbers however a small model writes them: 2, "2", "[2]", "2, 3", [2, "3"], 2.0."""
+    """Parse source numbers in any common form: 2, "2", "[2]", "2, 3", [2, "3"]."""
     if isinstance(v, bool) or v is None:
         return []
     if isinstance(v, (int, float)):
@@ -632,7 +620,7 @@ def _numbers(v):
 
 
 def _unique_changes(changes):
-    """Two old notes saying £40k and two new ones saying £28k is one change, not two."""
+    """Deduplicate changes by (kind, old value, new value)."""
     seen, out = set(), []
     for c in changes:
         key = (c["kind"], c["old_value"], c["new_value"])
@@ -652,12 +640,12 @@ def _model_or_reason(session):
     return status["chat"], None
 
 
-# Each written answer comes as a stream of events, so the page can show it
-# while the local model is still writing:
+# Model answers are streamed as events:
 #   {"type": "start", "model": ..., "excerpts_sent": n}
-#   {"type": "partial", "draft": {...}}   unchecked, as far as it is written
-#   {"type": "final", ...}                checked against the notes; this is the answer
-# prep_ai / ask_ai give just the final event, for anything that does not stream.
+#   {"type": "status", ...}             loading / waiting / thinking
+#   {"type": "partial", "draft": {...}}  unverified draft
+#   {"type": "final", ...}               verified result
+# prep_ai() / ask_ai() return only the final event.
 
 def _clean_points(items):
     return [p for p in _as_points(items) if p["text"]]
@@ -671,11 +659,11 @@ def _final(result):
 
 def _stream(session, model, system, user, schema, purpose, used, draft_of, finish, max_chars):
     yield {"type": "start", "model": model, "excerpts_sent": len(used)}
-    # Tell the page what the wait is for, so a slow start is not a mystery.
+    # Report what the request is waiting on.
     yield {"type": "status", "loading": not session.model.loaded(model),
            "waiting_for_image": session.reading_now is not None}
     out = None
-    session.foreground_begin()                  # background image reading waits until this is done
+    session.foreground_begin()                  # pauses background transcription
     try:
         for kind, obj in session.model.stream_json(model, system, user, schema, purpose=purpose,
                                                    max_chars=max_chars):
@@ -745,7 +733,7 @@ def ask_ai_events(session, question):
         return
     used = base["evidence"][:ASK_EXCERPTS]
     asked = base["question"]
-    # A bare name or topic ("reinart", "Helix budget") is not a question; small models need it to be one.
+    # Rephrase bare topics ("Helix budget") as questions; small models handle these poorly.
     if "?" not in asked and len(asked.split()) <= 3:
         asked = "What do the notes say about %s?" % asked
     user = "Today is %s.\nQuestion: %s\n\nExcerpts from the manager's notes:\n\n%s" % (
@@ -758,12 +746,11 @@ def ask_ai_events(session, question):
     def finish(out):
         points, dropped = _ground(out.get("answer"), used, 2)
         said_yes = out.get("found") not in (False, "false", "no", 0)
-        # The notes decide, not the model's yes/no: points that check out against notes
-        # that clearly match the question are an answer, even if the model was unsure.
+        # Verified points count as an answer when retrieval found a match, regardless of the model's flag.
         found = bool(points) and (said_yes or base["verdict"] == "found")
         caveat = str(out.get("caveat") or "")
         if not found and base["verdict"] == "found":
-            caveat = ""                          # "not in the notes" is wrong when the notes plainly match
+            caveat = ""                          # contradicted by retrieval
         return {"available": True, "model": model, "found": found, "answer": points,
                 "notes_match": base["verdict"] == "found",
                 "caveat": caveat, "dropped": dropped, "excerpts_sent": len(used)}

@@ -1,13 +1,8 @@
-"""The search index: built in memory each session, never saved.
+"""In-memory search index.
 
-Most "chat with your notes" tools keep a searchable copy of your notes on disk
-(or on a server). That copy is exactly what the one rule forbids. Here the
-index is an ordinary Python object, rebuilt from the notes when you switch a
-folder on (it takes milliseconds) and dropped when you switch it off or end
-the session.
-
-Search is BM25 keyword ranking with light stemming and typo tolerance. If a
-local embedding model is installed, brief.py blends in meaning-based matches.
+BM25 ranking over small chunks of each note, with light stemming, typo
+tolerance and synonym expansion. Rebuilt whenever the approved notes change
+and never written to disk.
 """
 from __future__ import annotations
 
@@ -63,8 +58,7 @@ def stems(text, keep_stop=False):
     return out
 
 
-# Words people swap freely. If you ask what was "decided" and the note says
-# "agreed", that should still count as a match.
+# Synonym groups used for query expansion (weighted lower than exact terms).
 SYNONYMS = [
     "decide decided decision agreed agreement confirmed approved settled",
     "start begin kick-off launch go-live",
@@ -83,7 +77,7 @@ for _group in SYNONYMS:
 
 
 class Chunk:
-    """A few consecutive lines of one note, with where and when they came from."""
+    """A run of consecutive lines from one note, with its date and heading."""
     __slots__ = ("id", "doc", "start", "end", "lines", "date", "heading", "terms", "length")
 
     def __init__(self, doc, start, lines, date, heading):
@@ -99,7 +93,7 @@ class Chunk:
         self.terms = {}
         for t in body:
             self.terms[t] = self.terms.get(t, 0) + 1.0
-        for t in context:                        # a note's title counts as context
+        for t in context:                        # title and heading count as context
             self.terms[t] = self.terms.get(t, 0) + 0.6
         self.length = len(body) + 0.6 * len(context)
 
@@ -109,7 +103,7 @@ class Chunk:
 
 
 def chunk_doc(doc, max_lines=9):
-    """Split a note into small blocks, tracking date headings in running notes."""
+    """Split a note into chunks, tracking dated headings in running notes."""
     chunks = []
     current, start = [], 1
     date, heading = doc.date, None
@@ -171,8 +165,10 @@ class Index:
         return math.log(1 + (self.n - df + 0.5) / (df + 0.5))
 
     def expand(self, query):
-        """Query stems -> {stem: weight}, plus {stand-in: original} for near-miss
-        spellings and everyday synonyms found in the notes."""
+        """Expand a query: ({stem: weight}, {variant: original_stem}).
+
+        Variants are close spellings and synonyms present in the index.
+        """
         out, typo, synonym = {}, {}, {}
         self._weak = set()
         for t in dict.fromkeys(stems(query)):
@@ -194,7 +190,7 @@ class Index:
         q, typo = self.expand(query)
         if not q or not self.n:
             return []
-        weak = set(self._weak)                   # synonyms count for less than the word itself
+        weak = set(self._weak)                   # synonyms are down-weighted
         results = []
         for c in self.chunks:
             score, matched = 0.0, set()
@@ -211,7 +207,7 @@ class Index:
         return results[:k]
 
     def coverage(self, query, matched):
-        """How much of what was asked (weighted by rarity) did we actually find?"""
+        """Fraction of the query's IDF weight matched, and the unmatched stems."""
         q, _ = self.expand(query)
         if not q:
             return 0.0, []

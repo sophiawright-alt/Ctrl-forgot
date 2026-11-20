@@ -1,4 +1,4 @@
-"""Finding dates in messy notes: "3 Nov", "03/11/2026", "by Fri", "EOW"."""
+"""Date parsing for informal notes: "3 Nov", "03/11/2026", "by Fri", "EOW"."""
 from __future__ import annotations
 
 import datetime as dt
@@ -27,7 +27,7 @@ def _mk(y, m, d):
 
 
 def _closest_year(month, day, ref):
-    """No year written: pick the year that puts the date nearest the note."""
+    """Resolve a date without a year to the year nearest `ref`."""
     best = None
     for y in (ref.year - 1, ref.year, ref.year + 1):
         d = _mk(y, month, day)
@@ -39,8 +39,7 @@ def _closest_year(month, day, ref):
 def find_dates(text, ref=None, relative=True):
     """Return [{date, start, end, text, relative}] found in `text`.
 
-    `ref` is the date the note was written; it resolves missing years and
-    phrases like "by Friday".
+    `ref` (the note's date) resolves missing years and relative phrases.
     """
     ref = ref or dt.date.today()
     found = []
@@ -93,7 +92,7 @@ def find_dates(text, ref=None, relative=True):
 
 
 def note_date(filename, lines, mtime):
-    """Best guess at when a note was written, and how we know."""
+    """Best-guess date for a note and its source: file name, first lines or mtime."""
     ref = dt.date.fromtimestamp(mtime)
     hits = find_dates(filename.replace("_", " "), ref, relative=False)
     if hits:
@@ -106,7 +105,7 @@ def note_date(filename, lines, mtime):
 
 
 def section_date(line, ref):
-    """If a line is a date heading inside a running note ("## 14 Oct"), return the date."""
+    """Date of a dated heading in a running note ("## 14 Oct"), else None."""
     bare = line.strip().lstrip("#*=-> ").strip()
     if not bare or len(bare) > 48:
         return None

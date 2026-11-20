@@ -1,8 +1,8 @@
-"""One session: what the assistant may see right now, and what it holds in memory.
+"""Session state: approved folders, loaded notes and background work.
 
-Nothing here is ever written down. When a folder is switched off its notes
-are dropped from memory at once; when the session ends everything is dropped.
-Even the permissions are forgotten, so each session starts blind.
+Nothing is persisted. Disabling a folder drops its notes immediately;
+`end()` verifies the notes are unchanged and clears all state, including
+folder approvals.
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ class Doc:
         self.image_kind = None
         self.uncertain = False
         self.note = ""
-        self.images = None                    # page pictures of a scanned PDF (memory only)
+        self.images = None                    # page images of a scanned PDF (memory only)
 
     def set_text(self, text):
         self.lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
@@ -51,7 +51,7 @@ class Doc:
 
 
 class PasscodeError(ValueError):
-    """Opening a protected folder needs the right passcode."""
+    """Raised when a protected folder is opened without the correct passcode."""
 
     def __init__(self, message, needs_passcode=True):
         super().__init__(message)
@@ -67,11 +67,11 @@ class Session:
         self.model = model
         self._today = today
         self.lock = threading.RLock()
-        self.allowed = set()                  # unit names switched on
-        self.protected = {p.strip() for p in protected if p and p.strip()}   # need a passcode to switch on
+        self.allowed = set()                  # approved folders
+        self.protected = {p.strip() for p in protected if p and p.strip()}   # require a passcode
         self._passcode = passcode
         self._wrong, self._locked_until = 0, 0.0
-        self.hidden = set()                   # individual note ids switched off
+        self.hidden = set()                   # individually hidden notes
         self.docs = {}                        # id -> Doc
         self.skipped = {}                     # unit -> count of unsupported files
         self.index = Index()
@@ -79,8 +79,8 @@ class Session:
         self.started = time.time()
         self._last_sync = 0.0
         self._jobs = queue.Queue()
-        self._foreground = 0                  # answers being written right now
-        self.reading_now = None               # the image being read, if any
+        self._foreground = 0                  # active model answers
+        self.reading_now = None               # image currently being transcribed
         self._worker = threading.Thread(target=self._work, daemon=True)
         self._worker.start()
 
@@ -103,7 +103,7 @@ class Session:
         return unit in self.allowed and rel.replace(os.sep, "/") not in self.hidden
 
     def units(self):
-        """Top-level folders in the notes folder. Looks at names only, not inside."""
+        """Top-level folders in the notes root (names only; contents are not listed)."""
         names, loose = [], False
         try:
             with os.scandir(self.root) as it:
@@ -148,7 +148,7 @@ class Session:
             if on:
                 self.allowed.add(unit)
                 self.ledger.record("allow", {"folder": unit, "passcode": unit in self.protected})
-                # Get the model into memory now, so the first answer does not wait for it.
+                # Preload the model so the first answer is not delayed.
                 threading.Thread(target=self.model.warm, daemon=True).start()
             else:
                 self.allowed.discard(unit)
@@ -207,7 +207,7 @@ class Session:
             doc.status, doc.note = "failed", "too large to read"
             return doc
         try:
-            with open(path, "rb") as f:           # the lock records this read
+            with open(path, "rb") as f:           # logged by the guard
                 data = f.read()
         except OSError as e:
             doc.status, doc.note = "failed", "could not be opened: %s" % e
@@ -220,12 +220,12 @@ class Session:
             except pdftext.PDFError as e:
                 doc.status, doc.note = "failed", _pdf_problem(e)
                 return doc
-            except Exception as e:                   # a damaged or unusual file
+            except Exception as e:                   # malformed file
                 doc.status, doc.note = "failed", "PDF could not be read (%s)" % str(e)[:80]
                 return doc
             if text.strip():
                 doc.set_text(text)
-            elif pages:                              # a scan: read the pictures like a photo
+            elif pages:                              # scanned: transcribe page images
                 doc.kind, doc.images, doc.status = "image", pages, "queued"
                 self._jobs.put(("transcribe", doc.id, doc.sha256))
             else:
@@ -249,7 +249,7 @@ class Session:
         return doc
 
     def sync(self, force=False, rebuild=False):
-        """Bring memory in line with the allowed folders (new, edited, deleted notes)."""
+        """Reconcile memory with the approved folders: added, edited and deleted notes."""
         with self.lock:
             if not force and time.time() - self._last_sync < 3:
                 return
@@ -300,14 +300,14 @@ class Session:
                     self._transcribe(doc_id, sha)
                 elif job == "embed":
                     self._embed()
-            except Exception as e:               # never let the worker die
+            except Exception as e:               # keep the worker alive
                 self.ledger.record("note", {"message": "background task failed: %s" % e})
 
     def _transcribe(self, doc_id, sha):
         with self.lock:
             doc = self.docs.get(doc_id)
             if not doc or doc.sha256 != sha:
-                return                           # switched off or changed meanwhile
+                return                           # removed or changed meanwhile
             vision = self.model.refresh().get("vision")
             if not vision:
                 doc.status, doc.note = "no_model", "no local model that can read images is installed"
@@ -331,14 +331,14 @@ class Session:
                     texts.append(("[page %d]\n" % n if len(pages) > 1 else "") + t)
                 with self.lock:
                     if self.docs.get(doc_id) is not doc:
-                        return                   # switched off while reading: stop and discard
+                        return                   # folder disabled meanwhile: discard
         except Exception as e:
             with self.lock:
                 if self.docs.get(doc_id) is doc:
                     doc.tries = getattr(doc, "tries", 0) + 1
                     if "timed out" in str(e) and doc.tries < 2:
                         doc.status, doc.note = "queued", "taking a long time; trying once more"
-                        self._jobs.put(("transcribe", doc_id, sha))      # back of the queue
+                        self._jobs.put(("transcribe", doc_id, sha))      # retry later
                     else:
                         doc.status, doc.note = "failed", str(e)[:200] + (
                             ". Large phone photos are slow to read: try saving a smaller copy "
@@ -346,9 +346,9 @@ class Session:
             return
         with self.lock:
             if self.docs.get(doc_id) is not doc:
-                return                           # permission was withdrawn while reading: discard
+                return                           # folder disabled meanwhile: discard
             text = "\n\n".join(texts)
-            # what sort of picture it is, for the label in the list: screenshots are usually saved as PNG
+            # label for the UI; screenshots are usually PNG
             doc.image_kind = ("scan" if doc.images else
                               "screenshot" if os.path.splitext(doc.path)[1].lower() in (".png", ".webp", ".bmp", ".gif")
                               else "handwriting")
@@ -425,7 +425,7 @@ class Session:
 
     # ---- ending ---------------------------------------------------------
     def end(self):
-        """Check the notes are untouched, then forget everything."""
+        """Verify notes are unchanged since they were read, then clear all state."""
         with self.lock:
             checked, changed, missing = 0, [], []
             for d in sorted(self.docs.values(), key=lambda d: d.id):
@@ -474,7 +474,7 @@ def _pdf_problem(error):
 
 
 def _docx_problem(data, error):
-    """A plain reason a .docx could not be read, so the user knows what to do."""
+    """Human-readable reason a .docx could not be read."""
     if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
         return ("protected Word file (a password or a sensitivity label such as 'Confidential'). "
                 "Remove the protection or copy the text into a new document")
@@ -488,12 +488,10 @@ def _local(tag):
 
 
 def docx_text(data):
-    """Pull the text out of a Word document, one paragraph per line.
+    """Extract paragraph text from .docx bytes without writing to disk.
 
-    A .docx is a zip of XML, so this needs nothing but Python itself, and it
-    reads from the bytes already in memory: nothing is unpacked to disk.
-    Tags are matched by name only, so both the normal and the "Strict"
-    Word formats work.
+    Element tags are matched by local name, so Transitional and Strict OOXML
+    both work.
     """
     import io
     import zipfile
@@ -524,9 +522,9 @@ def docx_text(data):
                 listed = True
         text = "".join(parts)
         if text.strip() and style.lower().startswith(("heading", "title")):
-            text = "# " + text                       # keep headings recognisable
+            text = "# " + text                       # mark headings
         elif text.strip() and listed:
-            text = "- " + text                       # bulleted or numbered list item
+            text = "- " + text                       # list item
         lines.extend(text.split("\n"))
     return "\n".join(lines)
 

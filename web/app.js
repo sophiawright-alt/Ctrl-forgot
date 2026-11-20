@@ -1,9 +1,8 @@
-/* Second Brain: the page. Talks only to the local server it was loaded from.
-   Note text is always inserted as text (never as HTML), and nothing is put in
-   browser storage: close the tab and the page has kept nothing either. */
+/* Second Brain web UI. Talks only to the server it was loaded from. Note text is
+   always inserted as text nodes (never HTML), and nothing is kept in browser storage. */
 "use strict";
 
-// ---------- tiny helpers ----------
+// ---------- helpers ----------
 function h(tag, attrs) {
   const el = document.createElement(tag);
   if (attrs) for (const k in attrs) {
@@ -37,10 +36,10 @@ const plural = (n, one, many) => n + " " + (n === 1 ? one : (many || one + "s"))
 // Must match __version__ in secondbrain/__init__.py.
 const APP_VERSION = "0.4.6";
 let STATE = null;
-let EVIDENCE = [];          // excerpts behind whatever is on screen
+let EVIDENCE = [];          // excerpts cited by the current result
 let lastFolders = "", lastChips = "";
 
-// ---------- left: what I can see ----------
+// ---------- folders ----------
 const STATUS = { queued: "waiting to read", reading: "reading…", no_model: "can't read: no vision model",
                  failed: "couldn't read", empty: "no text found" };
 
@@ -103,7 +102,7 @@ async function hide(note, hideIt) { apply(await api("/api/hide", { note, hide: h
 $("all-on").onclick = async () => apply(await api("/api/allow_all", { on: true }));
 $("all-off").onclick = async () => apply(await api("/api/allow_all", { on: false }));
 
-// ---------- right: receipt ----------
+// ---------- receipt ----------
 function describe(e) {
   const d = e.detail || {};
   switch (e.kind) {
@@ -171,7 +170,7 @@ function renderChips(s) {
 }
 function apply(s) {
   STATE = s;
-  // The page is fresh from disk, but the app behind it may be an older copy still running.
+  // Detect a stale server (an older version still running behind a newer page).
   const stale = s.version !== APP_VERSION;
   $("stale").hidden = !stale;
   renderFolders(s); renderReceipt(s); renderPills(s); renderChips(s);
@@ -203,7 +202,7 @@ function where(it) {
     it.handwriting ? h("span", { class: "badge grey" }, "read from an image") : null,
     it.uncertain ? h("span", { class: "badge amber" }, "unsure of a word") : null);
 }
-// One line of a brief: the date it was written in the margin, the note's words beside it.
+// A cited line: date in the margin, text and source beside it.
 function row(it) {
   const body = h("div", { class: "what" });
   for (let i = 1; i < arguments.length; i++) add(body, arguments[i]);
@@ -231,10 +230,10 @@ function points(list) {
   return h("ul", { class: "items" }, list.map(p => h("li", null, p.text, p.sources.map(cite),
     p.check === "verify" ? h("span", { class: "badge amber", title: p.why_verify }, "check the source") : null)));
 }
-// ---------- written answers, shown while the local model writes them ----------
+// ---------- streamed model answers ----------
 const streams = {};
 async function streamAI(key, path, body, onEvent) {
-  if (streams[key]) streams[key].abort();          // a new question: stop the model writing the old answer
+  if (streams[key]) streams[key].abort();          // cancel the previous request
   const ctrl = new AbortController();
   streams[key] = ctrl;
   let finished = false;
@@ -281,7 +280,7 @@ function waiting(card, ev) {
     : "Reading your notes. The first words usually appear within a few seconds.";
   clear(body).appendChild(h("p", { class: "loading", "data-since": since ? since.since : String(Date.now()) }, why));
 }
-// A seconds counter on anything still waiting, so a slow laptop does not look frozen.
+// Elapsed-time counter for pending requests.
 setInterval(() => document.querySelectorAll("[data-since]").forEach(el => {
   let t = el.querySelector(".secs");
   if (!t) { t = h("span", { class: "secs" }); el.appendChild(t); }
@@ -299,7 +298,7 @@ function aiCard(title) {
   return h("div", { class: "card ai" }, h("h3", null, title), h("p", { class: "loading" }, "Writing this on your device. Nothing is being sent anywhere."));
 }
 
-// ---------- prepare for a meeting ----------
+// ---------- meeting prep ----------
 let prepRun = 0;
 async function runPrep() {
   const q = $("prep-q").value.trim();
@@ -368,7 +367,7 @@ async function runPrep() {
 }
 $("prep-form").onsubmit = e => { e.preventDefault(); runPrep(); };
 
-// ---------- find something ----------
+// ---------- find ----------
 let askRun = 0;
 async function runAsk() {
   const q = $("ask-q").value.trim();
@@ -416,14 +415,14 @@ async function runAsk() {
     ai.appendChild(h("p", { class: "sub" }, "Written by " + s.model + " on this device, then checked against your notes."));
     if (s.found) ai.appendChild(points(s.answer));
     else if (s.notes_match) {
-      // the notes clearly match; the model just could not turn them into a checked answer
+      // retrieval matched, but the model produced no verifiable answer
       ai.appendChild(h("p", { class: "sub" }, "The model did not write an answer I could check against your notes. " +
         "The lines below are what your notes say: click a number to read the note."));
     }
     else {
       ai.appendChild(h("p", { class: "headline" }, "Your notes do not answer this as asked."));
       if (s.answer.length) add(ai, [h("h4", null, "What they do say"), points(s.answer)]);
-      // the notes listed below are related, not an answer: say so
+      // relabel the evidence as related rather than answering
       if (notesCard && notesCard.firstChild.textContent === "What your notes say")
         notesCard.firstChild.textContent = "Related notes (these do not answer it as asked)";
       out.querySelectorAll(".card.changed > h3").forEach(t => { t.textContent = "Related notes that disagree"; });
@@ -441,7 +440,7 @@ document.querySelectorAll(".tab").forEach(t => t.onclick = () => {
   $("tab-ask").hidden = t.dataset.tab !== "ask";
 });
 
-// ---------- modal: source viewer, lock test, final receipt ----------
+// ---------- dialogs: source viewer, guard self-test, final receipt ----------
 function openModal(content) { add(clear($("modal-body")), content); $("overlay").hidden = false; $("modal-close").focus(); }
 function closeModal() { $("overlay").hidden = true; clear($("modal-body")); }
 $("modal-close").onclick = closeModal;
@@ -528,8 +527,7 @@ $("end").onclick = async () => {
   ]);
 };
 
-// Tell the app when its window closes, so it can forget everything and quit.
-// (A reload says this too; the app waits a few seconds to see if the page comes back.)
+// Notify the server on close so it can end the session (it waits briefly in case of a reload).
 window.addEventListener("pagehide", () => { try { navigator.sendBeacon("/api/bye", ""); } catch (e) { /* closing anyway */ } });
 
 poll();

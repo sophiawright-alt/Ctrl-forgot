@@ -1,6 +1,14 @@
+# Local configuration (may contain a passcode and personal paths)
+settings.txt
+
+# Python
 __pycache__/
 *.pyc
+
+# Office lock files
 ~$*
+
+# Media and OS files
 *.mp4
 *.mov
 .DS_Store

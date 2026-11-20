@@ -1,26 +1,14 @@
-"""The lock.
+"""Runtime enforcement of the privacy model using Python audit hooks (PEP 578).
 
-This module is how the assistant upholds the one rule, "your knowledge stays
-yours", in code rather than by promise. Once `arm()` has been called, this
-Python process:
+Once armed, the process cannot:
+  * open files for writing, or create, move or delete files;
+  * connect to or resolve anything other than loopback addresses;
+  * start processes or load native libraries through ctypes;
+  * read or list anything in the notes folder outside the approved folders.
 
-  * cannot open any file for writing, or create, rename, move or delete one
-    ("no copies");
-  * cannot open a network connection to anything except this machine
-    (127.0.0.1 / ::1), so nothing it reads can leave ("on device");
-  * cannot start another program that might do either of those for it;
-  * cannot read or list anything inside the notes folder that the user has
-    not switched on.
-
-It works with Python's audit hooks (PEP 578). The interpreter calls our hook
-*before* it opens a file, connects a socket or spawns a process, and if the
-hook raises, the operation never happens. A hook cannot be removed once it is
-installed, so nothing later in the program can switch the lock off.
-
-Honest limits: this is a seatbelt inside one process, not an operating-system
-sandbox. It covers everything Python does through its standard library, which
-is all this app uses (it has no third-party packages). A production version
-should add an OS-level sandbox on top. See README, "What this does not prove".
+The hook runs before each operation and cannot be removed once installed.
+This is an in-process control over the standard library (the app has no
+third-party dependencies), not an operating-system sandbox.
 """
 from __future__ import annotations
 
@@ -31,7 +19,7 @@ LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "0:0:0:0:0:0:0:1"}
 
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
 
-# Anything that changes the disk without going through open().
+# Filesystem changes that do not go through open().
 _DISK_CHANGE_EVENTS = {
     "os.remove", "os.rename", "os.rmdir", "os.mkdir", "os.truncate",
     "os.chmod", "os.chown", "os.link", "os.symlink", "os.utime",
@@ -42,7 +30,7 @@ _DISK_CHANGE_EVENTS = {
     "sqlite3.connect",
 }
 
-# Anything that hands work to another program (which would not be locked).
+# Process creation and native code loading (would bypass the hook).
 _PROCESS_EVENTS = {
     "subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn",
     "os.fork", "os.forkpty", "os.startfile", "pty.spawn", "webbrowser.open",
@@ -55,7 +43,7 @@ _NAME_LOOKUP_EVENTS = {
 
 
 class GuardViolation(PermissionError):
-    """Raised when the app tries to do something the one rule forbids."""
+    """Raised when a prohibited operation is attempted."""
 
 
 class _State:
@@ -91,7 +79,7 @@ def _report(kind, detail):
 
 def _block(what, detail):
     _report("blocked", {"what": what, "detail": str(detail)[:300]})
-    raise GuardViolation("Blocked by the one rule: %s (%s)" % (what, str(detail)[:200]))
+    raise GuardViolation("Blocked by the privacy guard: %s (%s)" % (what, str(detail)[:200]))
 
 
 def _host_of(address):
@@ -114,7 +102,7 @@ def _in_notes(path):
 
 
 def _check_read(path, how):
-    """Reads and listings inside the notes folder need the user's permission."""
+    """Reads and listings inside the notes folder require an approved folder."""
     if not _in_notes(path):
         return
     allowed = _state.is_allowed
@@ -177,7 +165,7 @@ def _hook(event, args):
 
 
 def arm(notes_root, exempt_dirs=(), is_allowed=None, on_event=None):
-    """Switch the lock on. There is deliberately no way to switch it off."""
+    """Install the audit hook. It cannot be disabled afterwards."""
     if _state.armed:
         raise RuntimeError("guard is already armed")
     sys.dont_write_bytecode = True
@@ -194,11 +182,9 @@ def is_armed():
 
 
 def self_test(notes_root, hidden_dir=None):
-    """Deliberately try to break the rule, and report what happened.
+    """Attempt each prohibited operation and report whether it was blocked.
 
-    Each attempt is real: the code genuinely tries to connect, write, and
-    launch. The lock is what stops it. Used by the "Try to break the rule"
-    button so a user can see the lock working instead of taking our word.
+    The attempts are real; the guard is what stops them.
     """
     import socket
     results = []
@@ -209,7 +195,7 @@ def self_test(notes_root, hidden_dir=None):
             results.append({"attempt": label, "blocked": False, "note": "NOT blocked. The lock failed."})
         except GuardViolation as e:
             results.append({"attempt": label, "blocked": True, "note": str(e)})
-        except Exception as e:  # blocked for another reason (e.g. no network at all)
+        except Exception as e:  # failed before reaching the guard
             results.append({"attempt": label, "blocked": True,
                             "note": "Failed before the lock was needed: %s" % e})
 
@@ -217,7 +203,7 @@ def self_test(notes_root, hidden_dir=None):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             s.settimeout(2)
-            s.connect(("93.184.216.34", 443))   # an ordinary public web server
+            s.connect(("93.184.216.34", 443))   # any public address
         finally:
             s.close()
 

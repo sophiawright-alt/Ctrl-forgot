@@ -1,12 +1,7 @@
-"""Talking to a model that runs on this machine (Ollama).
+"""Client for a local Ollama server.
 
-The address is fixed to 127.0.0.1. It is not configurable, and the lock in
-guard.py would refuse anything else anyway. Models that Ollama would run in
-the cloud are filtered out and never used.
-
-Every request is stateless: we send the excerpts needed for one answer and
-keep nothing. At the end of a session `unload()` asks Ollama to drop the model
-from memory too.
+The host is fixed to 127.0.0.1 and cloud-hosted models are ignored. Requests
+are stateless; models are unloaded when a session ends.
 """
 from __future__ import annotations
 
@@ -71,7 +66,7 @@ class LocalModel:
                 caps = info.get("capabilities")
             except ModelError:
                 caps = None
-            if not caps:                         # older Ollama: guess from the name
+            if not caps:                         # older Ollama: infer from the name
                 low = name.lower()
                 caps = ["embedding"] if any(h in low for h in EMBED_HINTS) else ["completion"]
                 if any(h in low for h in VISION_HINTS):
@@ -95,7 +90,7 @@ class LocalModel:
             for m in tags.get("models", []):
                 name = m.get("name") or m.get("model") or ""
                 if m.get("remote_host") or m.get("remote_model") or "cloud" in name.lower():
-                    cloud.append(name)           # would run off this device: never used
+                    cloud.append(name)           # cloud-hosted: never used
                 else:
                     local.append(name)
                     self._sizes[name] = _billions(name, (m.get("details") or {}).get("parameter_size"))
@@ -112,16 +107,15 @@ class LocalModel:
 
             size = lambda n: self._sizes.get(n) or 99.0
 
-            def thinks(n):                       # reasons at length before answering: slow
+            def thinks(n):                       # reasoning model
                 low = n.lower()
                 if "instruct" in low:
                     return False
                 return "thinking" in low or "thinking" in self._capabilities(n)
-            # Reading images happens in the background, so it gets the most accurate model.
+            # Transcription runs in the background: prefer the most capable vision model.
             v = os.environ.get("SECOND_BRAIN_VISION_MODEL") or prefer(
                 sorted(vision, key=lambda n: (thinks(n), -size(n) if size(n) <= 12 else size(n))), VISION_PREFERENCE)
-            # Summaries are written while you wait, so they get the quickest sensible one:
-            # the smallest installed model of at least 3 billion parameters.
+            # Answers are interactive: prefer the smallest non-reasoning model of at least 3B parameters.
             sensible = (sorted((n for n in chat if size(n) >= 3), key=lambda n: (thinks(n), size(n))) or
                         sorted(chat, key=lambda n: (thinks(n), -size(n))))
             c = os.environ.get("SECOND_BRAIN_MODEL") or (sensible[0] if sensible else None)
@@ -138,7 +132,7 @@ class LocalModel:
 
     # ---- calls ----------------------------------------------------------
     def chat_json(self, model, system, user, schema, images=None, purpose="", timeout=420):
-        """One stateless question to the local model; returns parsed JSON."""
+        """Single stateless chat request with a JSON schema; returns the parsed object."""
         if "qwen" in model.lower():
             user += "\n/no_think"
         message = {"role": "user", "content": user}
@@ -148,7 +142,7 @@ class LocalModel:
                 "messages": [{"role": "system", "content": system}, message],
                 "options": {"temperature": 0.1, "num_ctx": self.context_for(model, reading_images=bool(images))}}
         if model not in self._no_think:
-            body["think"] = False                # answer directly; skip "thinking" where supported
+            body["think"] = False                # disable reasoning where supported
         sent = len(system) + len(user)
         t0 = time.time()
         try:
@@ -166,7 +160,7 @@ class LocalModel:
                                          "images": len(images or []), "error": str(e)[:160]})
             raise
         content = (resp.get("message") or {}).get("content") or ""
-        if not content.strip() and "think" in body:   # some Ollama versions: nothing when thinking is off
+        if not content.strip() and "think" in body:   # some Ollama versions return nothing with think=false
             self._no_think.add(model)
             del body["think"]
             try:
@@ -179,20 +173,17 @@ class LocalModel:
                                      "seconds": round(time.time() - t0, 1)})
         return _parse_answer(content)
 
-    IMAGE_CONTEXT = 8192                         # a photo alone can take a few thousand tokens
+    IMAGE_CONTEXT = 8192                         # images can use thousands of tokens
 
     def context_for(self, model, reading_images=False):
-        """How much working memory (tokens) to ask Ollama for.
+        """Context window (num_ctx) to request for `model`.
 
-        Every request to a model must ask for the same amount, or Ollama reloads the model,
-        and less working memory leaves more of the graphics card for the model itself.
-        4096 tokens comfortably holds a brief's notes and answer. "Thinking" models
-        reason at length first, so they get 8192.
+        Requests to one model should use a consistent value, since a change makes
+        Ollama reload it; smaller values leave more GPU memory for the weights. Image
+        transcription always gets IMAGE_CONTEXT so the image is not truncated.
         """
-        # Reading a photo needs room for the photo: with too little, Ollama cuts the image off
-        # and the model sees nothing. A model kept just for photos always gets enough. When one
-        # model does both jobs, answers (which you wait for) keep the smaller size, and Ollama
-        # briefly reloads the model when it switches to reading a photo in the background.
+        # Too small a context truncates the image. A vision-only model always gets IMAGE_CONTEXT;
+        # a model used for both keeps the smaller size for answers and is reloaded for images.
         st = self.status
         if reading_images or (model == st.get("vision") and model != st.get("chat")):
             return max(self.IMAGE_CONTEXT, self._chat_context(model))
@@ -210,17 +201,16 @@ class LocalModel:
         return 4096
 
     def loaded(self, model):
-        """Is this model already in memory (so the answer can start straight away)?"""
+        """Whether `model` is currently loaded in Ollama."""
         try:
             ps = self._request("GET", "/api/ps", timeout=3)
         except ModelError:
-            return True                          # unknown: do not claim it is loading
+            return True                          # unknown: assume loaded
         names = {m.get("name") or m.get("model") for m in ps.get("models", [])}
         return model in names
 
     def warm(self, which="chat"):
-        """Load a model into memory ahead of time, so the first answer is not slowed by loading.
-        Sends no notes: it is an empty request."""
+        """Preload a model with an empty request (no note content is sent)."""
         name = self.refresh().get(which)
         if not name or time.time() - self._warmed.get(name, 0) < 20 * 60:
             return
@@ -234,20 +224,15 @@ class LocalModel:
             self._warmed.pop(name, None)
 
     def stream_json(self, model, system, user, schema, purpose="", timeout=900, every=0.12, max_chars=None):
-        """Like chat_json, but yields the answer while the model is still writing it.
+        """Stream a JSON answer from the model.
 
-        Yields ("thinking", True) once if the model reasons before answering,
-        ("partial", object) as the answer grows (at most every `every`
-        seconds), where object is the best reading of the unfinished JSON,
-        then ("done", object) once with the finished answer.
-
-        `max_chars` stops reading once the answer itself is that long (the
-        model's thinking does not count towards it). Stopping early, for that
-        or because the user asked something else, closes the connection,
-        which tells Ollama to stop writing.
+        Yields ("thinking", True) once if the model emits reasoning, ("partial", obj)
+        as the answer grows (throttled to `every` seconds), and finally ("done", obj).
+        `max_chars` caps the answer length (reasoning excluded). Closing the generator
+        closes the connection, which stops generation in Ollama.
         """
         if "qwen" in model.lower():
-            user += "\n/no_think"                # Qwen's own switch: answer without reasoning first
+            user += "\n/no_think"                # Qwen soft switch to disable reasoning
         sent = len(system) + len(user)
         t0 = time.time()
         conn, content, thought, failed, finished, answer = None, "", 0, None, False, None
@@ -303,14 +288,13 @@ class LocalModel:
                             if isinstance(draft, dict):
                                 yield "partial", draft
                         if max_chars and len(content) > max_chars:
-                            break                    # long enough: stop the model and use what it wrote
+                            break                    # length cap reached
                     if msg.get("done"):
                         break
                 conn.close()
                 if content.strip():
                     break
-                # No answer at all. Some Ollama versions return nothing when thinking is
-                # switched off; letting the model decide for itself usually fixes it.
+                # Empty reply: some Ollama versions return nothing with think=false. Retry without it.
                 if attempt == 1 and "think" in body:
                     self._no_think.add(model)
                     continue
@@ -319,7 +303,7 @@ class LocalModel:
             try:
                 answer = _parse_answer(content)
             except ModelError:
-                answer = partial_json(content)   # stopped at the length cap: keep what was written
+                answer = partial_json(content)   # truncated at the cap: keep the parsed prefix
                 if not isinstance(answer, dict) or not answer:
                     raise ModelError("the model's answer was not in the expected form (it began: %r)" % content[:60])
             finished = True
@@ -342,11 +326,10 @@ class LocalModel:
         yield "done", answer
 
     def transcribe(self, model, image, purpose="", timeout=900):
-        """Read the text in one image, as plain text.
+        """Transcribe the text in an image; returns "" if there is none.
 
-        Asked as a plain question, not in a fixed reply format: with a photo attached,
-        a fixed format can stop some models reading the photo at all (they answer "no text").
-        Returns "" if the image has no readable text.
+        Uses a plain prompt rather than structured output: with an image attached, a
+        JSON schema can cause some models to report no text.
         """
         user = TRANSCRIBE_ASK + ("\n/no_think" if "qwen" in model.lower() else "")
         body = {"model": model, "stream": False, "keep_alive": "30m",
@@ -361,7 +344,7 @@ class LocalModel:
         try:
             resp = self._request("POST", "/api/chat", body, timeout=timeout)
             text = (resp.get("message") or {}).get("content") or ""
-            if not text.strip() and "think" in body:   # some Ollama versions: nothing when thinking is off
+            if not text.strip() and "think" in body:   # some Ollama versions return nothing with think=false
                 self._no_think.add(model)
                 del body["think"]
                 resp = self._request("POST", "/api/chat", body, timeout=timeout)
@@ -384,7 +367,7 @@ class LocalModel:
         return vectors
 
     def unload(self):
-        """Ask Ollama to drop our models from its memory."""
+        """Ask Ollama to unload the models used in this session."""
         dropped = []
         for name in {self.status.get("chat"), self.status.get("vision")} - {None}:
             try:
@@ -403,7 +386,7 @@ class LocalModel:
 
 
 def _billions(name, reported):
-    """Model size in billions of parameters, from Ollama's details or the tag (":8b")."""
+    """Parameter count in billions, from Ollama's details or the model tag."""
     for text in (reported or "", name.split(":")[-1]):
         m = re.search(r"(\d+(?:\.\d+)?)\s*([bm])\b", str(text).lower())
         if m:
@@ -412,10 +395,10 @@ def _billions(name, reported):
 
 
 def _clean_transcript(text):
-    """Strip what models add around a transcription: code fences, a stray JSON wrapper, "no text"."""
+    """Remove code fences, stray JSON wrappers and "no text" replies."""
     t = text.strip()
     t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", t).strip()
-    if t.startswith("{") and t.endswith("}"):        # a model that answered in JSON anyway
+    if t.startswith("{") and t.endswith("}"):        # JSON despite the plain prompt
         try:
             obj = json.loads(t)
             t = str(obj.get("text") or "") if isinstance(obj, dict) else t
@@ -443,11 +426,10 @@ _ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", '"': '"', "\\
 
 
 def partial_json(text):
-    """Read JSON that is still being written, as far as it goes.
+    """Parse an incomplete JSON document as far as it goes.
 
-    '{"headline": "Priya wants to le' gives {"headline": "Priya wants to le"}.
-    Unfinished strings come back as far as they are written; an unfinished
-    number or key is left out until it is complete.
+    Unfinished strings are returned as written so far; unfinished numbers and keys
+    are omitted.
     """
     n = len(text)
 
@@ -531,7 +513,7 @@ def partial_json(text):
         while j < n and text[j] not in ",}] \t\r\n":
             j += 1
         if j >= n:
-            return None, j, False                # a number may still be growing
+            return None, j, False                # number may be incomplete
         try:
             return json.loads(text[i:j]), j, True
         except ValueError:
@@ -596,8 +578,7 @@ ASK_SYSTEM = (
     "8. answer: up to 2 points. caveat: one short sentence about uncertainty, or an empty string.")
 
 
-# Shorter instructions for small models (under 3 billion parameters), which follow a few
-# plain rules better than a long list. The app's own checks are the same either way.
+# Shorter prompts for models under 3B parameters. Verification is identical.
 PREP_SYSTEM_SHORT = (
     "You help a manager get ready for a meeting. Use ONLY the numbered note excerpts. Never guess.\n"
     "Each point: one short sentence, copied names, numbers and dates, and the excerpt numbers it comes from in sources.\n"
@@ -612,5 +593,5 @@ ASK_SYSTEM_SHORT = (
 
 
 def small(model_status, model):
-    """Is this a small model (under 3 billion parameters)?"""
+    """True for models under 3B parameters."""
     return (model_status or {}).get(model, 99) < 3

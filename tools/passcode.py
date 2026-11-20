@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""Make a passcode line for settings.txt that does not show the passcode itself.
+"""Generate a hashed `passcode =` line for settings.txt.
 
     python tools/passcode.py
 
-Type the passcode twice (nothing shows as you type). It prints one line; paste
-it into settings.txt in place of any existing "passcode =" line. Nothing is
-saved anywhere.
+Prompts for the passcode twice and prints the line. Nothing is written to disk.
 """
 import getpass
 import os
